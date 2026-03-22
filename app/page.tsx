@@ -1151,12 +1151,14 @@ export default function NeuronPage() {
                   className="h-2 w-2 rounded-full bg-emerald-400"
                   style={isIngested ? { boxShadow: "0 0 6px #34d399" } : {}}
                 />
-                <span
-                  className="text-[13px] font-medium tracking-widest text-zinc-300"
+                <button
+                  type="button"
+                  onClick={startNewChat}
+                  className="text-[13px] font-medium tracking-widest text-zinc-300 transition hover:text-white"
                   style={{ fontFamily: "monospace" }}
                 >
                   NEURON
-                </span>
+                </button>
               </div>
 
               <div className="h-4 w-px flex-shrink-0 bg-zinc-800" />
