@@ -1,16 +1,15 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabase";
 
 type AuthMode = "signin" | "signup";
 
 export default function AuthPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const supabase = useMemo(() => createBrowserClient(), []);
-  const nextPath = searchParams.get("next") || "/";
+  const [nextPath, setNextPath] = useState<string>("/");
 
   const [mode, setMode] = useState<AuthMode>("signin");
   const [fullName, setFullName] = useState<string>("");
@@ -19,6 +18,12 @@ export default function AuthPage() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorText, setErrorText] = useState<string>("");
   const [infoText, setInfoText] = useState<string>("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requestedNext = params.get("next") || "/";
+    setNextPath(requestedNext.startsWith("/") ? requestedNext : "/");
+  }, []);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();

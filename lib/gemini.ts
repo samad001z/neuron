@@ -163,6 +163,39 @@ Answer:`;
 	}
 }
 
+export async function askGeminiRaw(prompt: string): Promise<string> {
+	const safeChatError = "I could not generate an answer right now. Please try again.";
+
+	try {
+		const model = await getChatModel();
+		const result = await model.generateContent(prompt);
+		return result.response.text();
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : "Unknown error";
+
+		if (isRateLimitError(message)) {
+			const waitMs = extractRetryDelayMs(message);
+			console.warn(`[askGeminiRaw] rate limited, retrying in ${Math.ceil(waitMs / 1000)}s`);
+			await new Promise((resolve) => setTimeout(resolve, waitMs));
+
+			try {
+				const retryModel = await getChatModel();
+				const retryResult = await retryModel.generateContent(prompt);
+				return retryResult.response.text();
+			} catch (retryError: unknown) {
+				const retryMessage = retryError instanceof Error ? retryError.message : "Unknown error";
+				console.error("[askGeminiRaw] retry failed:", retryMessage);
+				return safeChatError;
+			}
+		}
+
+		cachedChatModel = null;
+		cachedChatModelName = null;
+		console.error("[askGeminiRaw] error:", message);
+		return safeChatError;
+	}
+}
+
 export async function summariseFile(
 	filePath: string,
 	fileContent: string,

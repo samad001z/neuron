@@ -46,6 +46,18 @@ type AskResponse = {
   error?: string;
 };
 
+type PrExplainResponse = {
+  analysis?: string;
+  prMetadata?: {
+    title: string;
+    author: string;
+    changedFiles: number;
+    additions: number;
+    deletions: number;
+  };
+  error?: string;
+};
+
 type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
   inline?: boolean;
 };
@@ -196,6 +208,10 @@ export default function NeuronPage() {
   const [nowTick, setNowTick] = useState<number>(Date.now());
   const [, setCurrentModel] = useState<string>("resolving");
   const [fileFilter, setFileFilter] = useState<string>("");
+  const [prUrlInput, setPrUrlInput] = useState<string>("");
+  const [isPrLoading, setIsPrLoading] = useState<boolean>(false);
+  const [prError, setPrError] = useState<string | null>(null);
+  const [prMeta, setPrMeta] = useState<PrExplainResponse["prMetadata"] | null>(null);
 
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -611,6 +627,39 @@ export default function NeuronPage() {
     },
     [isChatLoading, isIngested, loadInitialMessages, sessionId],
   );
+
+  const handlePrExplain = useCallback(async (): Promise<void> => {
+    const trimmedPrUrl = prUrlInput.trim();
+
+    if (!trimmedPrUrl || !sessionId || isPrLoading) {
+      return;
+    }
+
+    setIsPrLoading(true);
+    setPrError(null);
+
+    try {
+      const response = await fetch("/api/pr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prUrl: trimmedPrUrl, sessionId }),
+      });
+
+      const payload = (await response.json()) as PrExplainResponse;
+
+      if (!response.ok || !payload.analysis) {
+        throw new Error(payload.error || "Failed to analyze PR");
+      }
+
+      setPrMeta(payload.prMetadata ?? null);
+      await loadInitialMessages(sessionId);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to analyze PR";
+      setPrError(message);
+    } finally {
+      setIsPrLoading(false);
+    }
+  }, [isPrLoading, loadInitialMessages, prUrlInput, sessionId]);
 
   const handleIngest = async (): Promise<void> => {
     const trimmedUrl = repoUrl.trim();
@@ -1471,6 +1520,50 @@ export default function NeuronPage() {
                     <p className="text-[11px] text-zinc-600">
                       ingested {indexedAt ? formatTimeAgo(indexedAt, nowTick) : "-"} · {files.length} files
                     </p>
+                    <div className="mt-3 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={prUrlInput}
+                        onChange={(event) => setPrUrlInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            void handlePrExplain();
+                          }
+                        }}
+                        placeholder="Paste GitHub PR URL for explainer"
+                        className="h-8 min-w-0 flex-1 rounded-md border bg-transparent px-2.5 text-[12px] outline-none"
+                        style={{
+                          borderColor: "var(--border-subtle)",
+                          color: "var(--text-primary)",
+                          fontFamily: "var(--font-mono)",
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handlePrExplain();
+                        }}
+                        disabled={!prUrlInput.trim() || isPrLoading}
+                        className="h-8 rounded-md px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
+                        style={{
+                          background: "var(--text-primary)",
+                          color: "var(--bg-app)",
+                          fontFamily: "var(--font-sans)",
+                        }}
+                      >
+                        {isPrLoading ? "Explaining..." : "Explain PR"}
+                      </button>
+                    </div>
+                    {prMeta && (
+                      <p className="mt-2 text-[11px]" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                        {prMeta.title} · @{prMeta.author} · {prMeta.changedFiles} files · +{prMeta.additions} -{prMeta.deletions}
+                      </p>
+                    )}
+                    {prError && (
+                      <p className="mt-2 text-[11px]" style={{ color: "var(--error)", fontFamily: "var(--font-mono)" }}>
+                        {prError}
+                      </p>
+                    )}
                   </div>
                 )}
                 <div ref={messageContainerRef} className="min-h-0 flex-1 overflow-y-auto px-8 py-6 scrollbar-thin">
