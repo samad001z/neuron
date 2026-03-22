@@ -41,6 +41,24 @@ type ChunkInsertRow = {
 	summary: string;
 };
 
+export type IngestProgressStage =
+	| "starting"
+	| "tree"
+	| "fetching"
+	| "graph"
+	| "processing"
+	| "saving"
+	| "complete";
+
+type IngestProgressPayload = {
+	stage: IngestProgressStage;
+	message: string;
+	current?: number;
+	total?: number;
+};
+
+type IngestProgressCallback = (payload: IngestProgressPayload) => void;
+
 function isMissingUserIdColumnError(message?: string): boolean {
 	if (!message) {
 		return false;
@@ -251,8 +269,13 @@ async function tryGetCachedIngestion(repoUrl: string, userId: string): Promise<I
 	};
 }
 
-export async function ingestRepo(repoUrl: string, userId: string): Promise<IngestedRepo> {
+export async function ingestRepo(
+	repoUrl: string,
+	userId: string,
+	onProgress?: IngestProgressCallback,
+): Promise<IngestedRepo> {
 	console.log("[ingestRepo] Step 0/5: Checking Supabase cache...");
+	onProgress?.({ stage: "starting", message: "Connecting to GitHub..." });
 	const cachedIngestion = await tryGetCachedIngestion(repoUrl, userId);
 
 	if (cachedIngestion) {
@@ -261,12 +284,17 @@ export async function ingestRepo(repoUrl: string, userId: string): Promise<Inges
 	}
 
 	console.log("[ingestRepo] Step 1/5: Fetching repository files...");
-	const files = await fetchRepoFiles(repoUrl);
+	onProgress?.({ stage: "tree", message: "Reading repository structure..." });
+	const files = await fetchRepoFiles(repoUrl, (current, total) => {
+		onProgress?.({ stage: "fetching", message: "Fetching files...", current, total });
+	});
 
 	console.log("[ingestRepo] Step 2/5: Building concatenated codebase context...");
+	onProgress?.({ stage: "processing", message: "Processing codebase..." });
 	const codebaseText = buildCodebaseText(files);
 
 	console.log("[ingestRepo] Step 3/5: Building dependency graph...");
+	onProgress?.({ stage: "graph", message: "Building dependency graph..." });
 	const graph = buildDependencyGraph(files);
 
 	console.log("[ingestRepo] Step 4/5: Summarising files in batches of 5...");
@@ -294,6 +322,7 @@ export async function ingestRepo(repoUrl: string, userId: string): Promise<Inges
 	}
 
 	console.log("[ingestRepo] Step 5/5: Persisting session/chunks/cache in Supabase...");
+	onProgress?.({ stage: "saving", message: "Saving to database..." });
 	const repoName = getRepoName(repoUrl);
 
 	const { data: insertedSession, error: sessionInsertError } = await supabaseAdmin

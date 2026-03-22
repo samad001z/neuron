@@ -17,7 +17,18 @@ type IngestResponse = {
   success?: boolean;
   sessionId?: string;
   fileCount?: number;
+  nodeCount?: number;
   error?: string;
+};
+
+type IngestStreamEvent = {
+  stage: "starting" | "tree" | "fetching" | "graph" | "processing" | "saving" | "complete" | "error";
+  message: string;
+  current?: number;
+  total?: number;
+  sessionId?: string;
+  fileCount?: number;
+  nodeCount?: number;
 };
 
 type GraphResponse = {
@@ -32,12 +43,6 @@ type AskResponse = {
   answer?: string;
   model?: string;
   sources?: string[];
-  error?: string;
-};
-
-type OnboardingResponse = {
-  brief?: string;
-  persona?: "fullstack" | "backend" | "frontend";
   error?: string;
 };
 
@@ -167,26 +172,30 @@ export default function NeuronPage() {
   const [isIngesting, setIsIngesting] = useState<boolean>(false);
   const [isIngested, setIsIngested] = useState<boolean>(false);
   const [files, setFiles] = useState<FileItem[]>([]);
-  const [summaries, setSummaries] = useState<Record<string, string>>({});
+  const [, setSummaries] = useState<Record<string, string>>({});
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [activeTab, setActiveTab] = useState<"chat" | "graph">("chat");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [messages, setMessages] = useState<AppMessage[]>([]);
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
-  const [panelOpen, setPanelOpen] = useState<boolean>(false);
+  const [, setPanelOpen] = useState<boolean>(false);
   const [chatInput, setChatInput] = useState<string>("");
-  const [statusText, setStatusText] = useState<string>("idle");
-  const [analysisText, setAnalysisText] = useState<string>("");
+  const [, setStatusText] = useState<string>("idle");
+  const [isComposerFocused, setIsComposerFocused] = useState<boolean>(false);
+  const [, setAnalysisText] = useState<string>("");
   const [ingestError, setIngestError] = useState<string | null>(null);
+  const [ingestProgress, setIngestProgress] = useState<{
+    stage: string;
+    message: string;
+    current?: number;
+    total?: number;
+  }>({ stage: "idle", message: "" });
   const [indexedAt, setIndexedAt] = useState<Date | null>(null);
   const [repoNameMeta, setRepoNameMeta] = useState<string>("");
-  const [progress, setProgress] = useState<number>(0);
+  const [, setProgress] = useState<number>(0);
   const [nowTick, setNowTick] = useState<number>(Date.now());
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [currentModel, setCurrentModel] = useState<string>("resolving");
-  const [lastQuestion, setLastQuestion] = useState<string>("");
-  const [isOnboardingLoading, setIsOnboardingLoading] = useState<boolean>(false);
-  const [onboardingPersona, setOnboardingPersona] = useState<"fullstack" | "backend" | "frontend">("fullstack");
+  const [, setCurrentModel] = useState<string>("resolving");
+  const [fileFilter, setFileFilter] = useState<string>("");
 
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -194,6 +203,7 @@ export default function NeuronPage() {
   const urlInputRef = useRef<HTMLInputElement | null>(null);
   const progressRef = useRef<NodeJS.Timeout | null>(null);
   const messageCacheRef = useRef<Record<string, AppMessage[]>>({});
+  const pendingAssistantIdRef = useRef<string | null>(null);
 
   const groupedHistory = useMemo(() => {
     const groups = new Map<string, HistorySession[]>();
@@ -217,6 +227,16 @@ export default function NeuronPage() {
 
     return -1;
   }, [messages]);
+
+  const filteredFiles = useMemo(() => {
+    const query = fileFilter.trim().toLowerCase();
+
+    if (!query) {
+      return files;
+    }
+
+    return files.filter((item) => item.path.toLowerCase().includes(query));
+  }, [fileFilter, files]);
 
   useEffect(() => {
     if (messageContainerRef.current) {
@@ -509,9 +529,32 @@ export default function NeuronPage() {
         return;
       }
 
+      const optimisticUserId = `local-user-${Date.now()}`;
+      const optimisticAssistantId = `local-thinking-${Date.now()}`;
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: optimisticUserId,
+          sessionId,
+          role: "user",
+          text: trimmed,
+          fileRef: null,
+          createdAt: new Date(),
+        },
+        {
+          id: optimisticAssistantId,
+          sessionId,
+          role: "assistant",
+          text: "Thinking...",
+          fileRef: null,
+          createdAt: new Date(),
+        },
+      ]);
+
+      pendingAssistantIdRef.current = optimisticAssistantId;
       setIsChatLoading(true);
       setChatInput("");
-      setLastQuestion(trimmed);
 
       try {
         const askResponse = await fetch("/api/ask", {
@@ -527,85 +570,49 @@ export default function NeuronPage() {
         }
 
         if (!askResponse.ok) {
-          setMessages((prev) => [
-            ...prev,
+          setMessages((prev) => {
+            const withoutThinking = prev.filter((item) => item.id !== optimisticAssistantId);
+
+            return [
+              ...withoutThinking,
+              {
+                id: `${Date.now()}-local-error`,
+                sessionId,
+                role: "assistant",
+                text: `Error: ${payload.error || "Request failed"}`,
+                fileRef: null,
+                createdAt: new Date(),
+              },
+            ];
+          });
+        }
+      } catch {
+        setMessages((prev) => {
+          const withoutThinking = prev.filter((item) => item.id !== optimisticAssistantId);
+
+          return [
+            ...withoutThinking,
             {
-              id: `${Date.now()}-local-error`,
+              id: `${Date.now()}-fetch-error`,
               sessionId,
               role: "assistant",
-              text: `Error: ${payload.error || "Request failed"}`,
+              text: "Error: Failed to fetch answer. Please try again.",
               fileRef: null,
               createdAt: new Date(),
             },
-          ]);
-        }
-      } catch {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `${Date.now()}-fetch-error`,
-            sessionId,
-            role: "assistant",
-            text: "Error: Failed to fetch answer. Please try again.",
-            fileRef: null,
-            createdAt: new Date(),
-          },
-        ]);
+          ];
+        });
       } finally {
+        setMessages((prev) => prev.filter((item) => item.id !== optimisticAssistantId));
+        pendingAssistantIdRef.current = null;
         setIsChatLoading(false);
+        await loadInitialMessages(sessionId);
       }
     },
-    [isChatLoading, isIngested, sessionId],
+    [isChatLoading, isIngested, loadInitialMessages, sessionId],
   );
 
-  const generateOnboardingBrief = useCallback(async (): Promise<void> => {
-    if (!sessionId || !isIngested || isOnboardingLoading) {
-      return;
-    }
-
-    setIsOnboardingLoading(true);
-    setActiveTab("chat");
-
-    try {
-      const response = await fetch("/api/onboarding", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, persona: onboardingPersona }),
-      });
-
-      const payload = (await response.json()) as OnboardingResponse;
-
-      if (!response.ok) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `${Date.now()}-onboarding-error`,
-            sessionId,
-            role: "assistant",
-            text: `Error: ${payload.error || "Failed to generate onboarding brief"}`,
-            fileRef: null,
-            createdAt: new Date(),
-          },
-        ]);
-      }
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `${Date.now()}-onboarding-fetch-error`,
-          sessionId,
-          role: "assistant",
-          text: "Error: Could not generate onboarding brief right now.",
-          fileRef: null,
-          createdAt: new Date(),
-        },
-      ]);
-    } finally {
-      setIsOnboardingLoading(false);
-    }
-  }, [isIngested, isOnboardingLoading, onboardingPersona, sessionId]);
-
-  const handleAnalyze = async (): Promise<void> => {
+  const handleIngest = async (): Promise<void> => {
     const trimmedUrl = repoUrl.trim();
 
     if (!trimmedUrl || isIngesting) {
@@ -623,7 +630,8 @@ export default function NeuronPage() {
     setIngestError(null);
     setPanelOpen(false);
     setStatusText("analyzing");
-    setAnalysisText("Analyzing files...");
+    setAnalysisText("Connecting...");
+    setIngestProgress({ stage: "starting", message: "Connecting...", current: 0, total: 0 });
     setProgress(0);
 
     if (progressRef.current) {
@@ -631,20 +639,7 @@ export default function NeuronPage() {
       progressRef.current = null;
     }
 
-    progressRef.current = setInterval(() => {
-      setProgress((value) => {
-        if (value >= 85) {
-          if (progressRef.current) {
-            clearInterval(progressRef.current);
-            progressRef.current = null;
-          }
-
-          return 85;
-        }
-
-        return value + Math.random() * 4;
-      });
-    }, 400);
+    setProgress(2);
 
     try {
       const ingestResponse = await fetch("/api/ingest", {
@@ -652,26 +647,103 @@ export default function NeuronPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repoUrl: trimmedUrl }),
       });
-      const ingestPayload = (await ingestResponse.json()) as IngestResponse;
 
-      if (!ingestResponse.ok || !ingestPayload.success || !ingestPayload.sessionId) {
-        throw new Error(ingestPayload.error || "Failed to ingest repository");
+      if (!ingestResponse.ok) {
+        const fallbackPayload = (await ingestResponse.json()) as IngestResponse;
+        throw new Error(fallbackPayload.error || "Failed to ingest repository");
       }
 
-      setAnalysisText(`Analyzing ${ingestPayload.fileCount ?? 0} files...`);
+      if (!ingestResponse.body) {
+        throw new Error("No stream returned from ingest endpoint");
+      }
 
-      const nextSessionId = ingestPayload.sessionId;
-      setSessionId(nextSessionId);
-      setRepoNameMeta(getRepoName(trimmedUrl));
-      window.history.pushState({}, "", `/session/${nextSessionId}`);
+      const reader = ingestResponse.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      await loadGraphState(nextSessionId);
-      await loadInitialMessages(nextSessionId);
-      await loadSessionHistory();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
 
-      setIndexedAt(new Date());
-      setIsIngested(true);
-      setStatusText("ready");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines.filter((item) => item.startsWith("data: "))) {
+          const data = JSON.parse(line.slice(6)) as IngestStreamEvent;
+          setIngestProgress(data);
+
+          const current = data.current ?? 0;
+          const total = data.total ?? 0;
+          setAnalysisText(total > 0 ? `${data.message} ${current}/${total}` : data.message);
+
+          if (data.stage === "tree") {
+            setProgress((value) => Math.max(value, 10));
+          }
+
+          if (data.stage === "fetching" && total > 0) {
+            const ratio = Math.max(0, Math.min(1, current / total));
+            setProgress(Math.round(15 + ratio * 70));
+          }
+
+          if (data.stage === "graph") {
+            setProgress((value) => Math.max(value, 88));
+          }
+
+          if (data.stage === "processing") {
+            setProgress((value) => Math.max(value, 90));
+          }
+
+          if (data.stage === "saving") {
+            setProgress((value) => Math.max(value, 95));
+          }
+
+          if (data.stage === "complete") {
+            if (!data.sessionId) {
+              throw new Error("Ingestion completed without a session id");
+            }
+
+            setSessionId(data.sessionId);
+            setRepoNameMeta(getRepoName(trimmedUrl));
+            window.history.pushState({}, "", `/session/${data.sessionId}`);
+
+            const graphRes = await fetch(`/api/graph?sessionId=${encodeURIComponent(data.sessionId)}`);
+            const graphPayload = (await graphRes.json()) as GraphResponse;
+
+            if (!graphRes.ok || !graphPayload.graph || !graphPayload.summaries) {
+              throw new Error(graphPayload.error || "Failed to load graph");
+            }
+
+            setGraph(graphPayload.graph);
+            setSummaries(graphPayload.summaries);
+            setRepoNameMeta(graphPayload.repoName ?? getRepoName(trimmedUrl));
+            setFiles(
+              graphPayload.files ?? graphPayload.graph.nodes.map((node) => ({ path: node.id, language: node.language })),
+            );
+
+            await loadInitialMessages(data.sessionId);
+            await loadSessionHistory();
+
+            setIndexedAt(new Date());
+            setIsIngested(true);
+            setStatusText("ready");
+            setProgress(100);
+            setIsIngesting(false);
+            return;
+          }
+
+          if (data.stage === "error") {
+            setIngestError(data.message);
+            setStatusText("error");
+            setIsIngesting(false);
+            return;
+          }
+        }
+      }
+
+      throw new Error("Ingestion stream ended unexpectedly");
     } catch (error: unknown) {
       const text = error instanceof Error ? error.message : "Ingestion failed";
       setIngestError(text);
@@ -698,6 +770,7 @@ export default function NeuronPage() {
 
       setIsIngesting(false);
       setAnalysisText("");
+      setIngestProgress({ stage: "idle", message: "" });
     }
   };
 
@@ -978,32 +1051,24 @@ export default function NeuronPage() {
   }, [activeTab, explainFile, graph]);
 
   const repoDisplayName = repoNameMeta || getRepoName(repoUrl);
-  const statusLeftText =
-    statusText === "error"
-      ? "error - check console"
-      : isIngesting
-      ? `analyzing ${repoDisplayName}...`
-      : isIngested
-      ? `${repoDisplayName} - ${files.length} files - indexed ${formatTimeAgo(indexedAt, nowTick)}`
-      : "ready";
 
   if (!authReady) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#080809]">
-        <p className="font-mono text-[32px] text-zinc-600 animate-pulse">neuron</p>
+      <main className="flex min-h-screen items-center justify-center bg-[#090b10]">
+        <p className="text-[32px] font-semibold tracking-tight text-zinc-500 animate-pulse">neuron</p>
       </main>
     );
   }
 
   return (
-    <main className="flex h-screen flex-col bg-[#080809] text-[#f4f4f5] [background:radial-gradient(1200px_500px_at_80%_-10%,rgba(124,58,237,0.18),transparent_55%),radial-gradient(900px_420px_at_0%_0%,rgba(56,189,248,0.08),transparent_45%),#080809]">
+    <main className="flex h-screen flex-col bg-[#090b10] text-[#f4f4f5] [background:radial-gradient(1200px_600px_at_100%_-10%,rgba(0,112,243,0.16),transparent_58%),radial-gradient(860px_420px_at_0%_0%,rgba(255,255,255,0.06),transparent_52%),#090b10]">
       <style jsx global>{`
-        @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
         html, body {
-          font-family: 'Geist Mono', monospace;
+          font-family: 'Geist', sans-serif;
         }
         * {
-          scrollbar-color: #3f3f46 #0b0b0f;
+          scrollbar-color: #3f3f46 #10131b;
         }
         @keyframes blink-cursor {
           0%, 49% { opacity: 1; }
@@ -1024,12 +1089,12 @@ export default function NeuronPage() {
       `}</style>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-[260px] shrink-0 flex-col border-r border-zinc-800/60 bg-[#0a0a0b]/90 backdrop-blur-xl animate-in slide-in-from-left duration-300">
+        <aside className="flex w-[260px] shrink-0 flex-col border-r border-zinc-800/80 bg-[#0d1118]/95 backdrop-blur-xl animate-in slide-in-from-left duration-300">
           <div className="p-3">
             <button
               type="button"
               onClick={startNewChat}
-              className="flex h-9 w-full items-center gap-2 rounded-md border border-zinc-700/60 px-3 text-[13px] text-zinc-300 transition hover:bg-zinc-800/40"
+              className="flex h-9 w-full items-center gap-2 rounded-md border border-zinc-700/80 bg-zinc-900/50 px-3 text-[13px] text-zinc-200 transition hover:bg-zinc-800/60"
             >
               <span className="text-base leading-none">+</span>
               <span>New chat</span>
@@ -1063,8 +1128,8 @@ export default function NeuronPage() {
                           onClick={() => openHistorySession(item.id)}
                           className={`group w-full rounded-md px-3 py-2.5 text-left transition ${
                             active
-                              ? "border-l-2 border-violet-500 bg-zinc-800"
-                              : "text-zinc-400 hover:bg-zinc-800/50"
+                              ? "border-l-2 border-sky-400 bg-zinc-800/70"
+                              : "text-zinc-400 hover:bg-zinc-800/60"
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -1114,7 +1179,7 @@ export default function NeuronPage() {
                   unoptimized
                 />
               ) : (
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-600 text-[11px] font-semibold text-white">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sky-600 text-[11px] font-semibold text-white">
                   {(currentUserName || currentUserEmail || "N")
                     .split(" ")
                     .filter(Boolean)
@@ -1142,33 +1207,48 @@ export default function NeuronPage() {
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col bg-[#080809] animate-in fade-in duration-500">
+        <section className="flex min-w-0 flex-1 flex-col bg-[#090b10] animate-in fade-in duration-500">
           {(sessionId || isIngesting) && (
           <div className="sticky top-0 z-10">
-            <header className="flex h-14 min-w-0 flex-shrink-0 items-center gap-3 border-b border-zinc-800/60 bg-zinc-950/70 px-5 backdrop-blur-xl animate-in slide-in-from-top duration-300">
-              <div className="flex flex-shrink-0 items-center gap-2">
-                <span
-                  className="h-2 w-2 rounded-full bg-emerald-400"
-                  style={isIngested ? { boxShadow: "0 0 6px #34d399" } : {}}
-                />
-                <button
-                  type="button"
-                  onClick={startNewChat}
-                  className="text-[13px] font-medium tracking-widest text-zinc-300 transition hover:text-white"
-                  style={{ fontFamily: "monospace" }}
-                >
-                  NEURON
-                </button>
-              </div>
+            <header
+              className="flex min-w-0 items-center gap-4 px-4"
+              style={{
+                height: "48px",
+                borderBottom: "1px solid var(--border-subtle)",
+                backgroundColor: "var(--bg-app)",
+                flexShrink: 0,
+              }}
+            >
+              <button
+                type="button"
+                onClick={startNewChat}
+                className="transition-opacity hover:opacity-80"
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "13px",
+                  fontWeight: 500,
+                  color: "var(--text-primary)",
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                neuron
+              </button>
 
-              <div className="h-4 w-px flex-shrink-0 bg-zinc-800" />
+              <div style={{ width: "1px", height: "16px", background: "var(--border-subtle)" }} />
 
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900/60 px-3 h-9 transition-colors duration-200 focus-within:border-violet-500/40">
-                  <svg className="h-3.5 w-3.5 flex-shrink-0 text-zinc-600" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-                  </svg>
-
+                <div
+                  className="flex min-w-0 flex-1 items-center"
+                  style={{
+                    maxWidth: "480px",
+                    height: "32px",
+                    padding: "0 10px",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-md)",
+                    backgroundColor: "var(--bg-elevated)",
+                    transition: "border-color 150ms",
+                  }}
+                >
                   <input
                     ref={urlInputRef}
                     type="text"
@@ -1176,18 +1256,23 @@ export default function NeuronPage() {
                     onChange={(event) => setRepoUrl(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
-                        void handleAnalyze();
+                        void handleIngest();
                       }
                     }}
                     placeholder="github.com/owner/repo"
-                    className="min-w-0 flex-1 bg-transparent font-mono text-[12px] text-zinc-300 placeholder-zinc-700 outline-none"
+                    className="min-w-0 flex-1 border-none bg-transparent outline-none placeholder:text-[var(--text-tertiary)]"
+                    style={{
+                      fontSize: "12px",
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--text-primary)",
+                    }}
                   />
 
                   {isIngested && (
                     <div className="hidden flex-shrink-0 items-center gap-2 md:flex">
-                      <span className="font-mono text-[10px] text-zinc-600">{files.length} files</span>
-                      <span className="text-[10px] text-zinc-700">·</span>
-                      <span className="text-[10px] text-zinc-700">
+                      <span className="font-mono text-[10px] text-[var(--text-secondary)]">{files.length} files</span>
+                      <span className="text-[10px] text-[var(--text-tertiary)]">·</span>
+                      <span className="text-[10px] text-[var(--text-tertiary)]">
                         indexed {indexedAt ? formatTimeAgo(indexedAt, nowTick) : "-"}
                       </span>
                     </div>
@@ -1197,10 +1282,22 @@ export default function NeuronPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    void handleAnalyze();
+                    void handleIngest();
                   }}
                   disabled={!repoUrl.trim() || isIngesting}
-                  className="h-9 flex-shrink-0 rounded-md bg-violet-600 px-5 text-[12px] font-semibold text-white transition-all duration-200 hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="h-8 flex-shrink-0 rounded-[var(--radius-md)] px-[14px] text-[12px] font-medium transition-opacity duration-150 disabled:cursor-not-allowed disabled:opacity-40"
+                  style={{
+                    background: "var(--text-primary)",
+                    color: "var(--bg-app)",
+                    border: "none",
+                    fontFamily: "var(--font-sans)",
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.opacity = "0.85";
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.opacity = "1";
+                  }}
                 >
                   {isIngesting ? (
                     <span className="flex items-center gap-1.5">
@@ -1219,85 +1316,92 @@ export default function NeuronPage() {
                   )}
                 </button>
               </div>
-
-              <span className="hidden flex-shrink-0 font-mono text-[10px] text-zinc-700 lg:block">⌘K</span>
             </header>
 
-            <div className="h-[2px] flex-shrink-0 overflow-hidden bg-zinc-900">
-              <div
-                className="h-full bg-violet-500 transition-all duration-500 ease-out"
-                style={{
-                  width: `${progress}%`,
-                  opacity: progress === 0 ? 0 : 1,
-                  boxShadow: progress > 0 ? "0 0 8px rgba(139,92,246,0.6)" : "none",
-                }}
-              />
-            </div>
-
             {isIngesting && (
-              <p className="px-5 pt-1 text-[11px] text-zinc-600">{analysisText || "Analyzing..."}</p>
+              <div
+                style={{
+                  height: "32px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "0 16px",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  backgroundColor: "var(--bg-surface)",
+                }}
+              >
+                <span
+                  style={{
+                    width: "6px",
+                    height: "6px",
+                    borderRadius: "50%",
+                    backgroundColor: "#ffffff",
+                    animation: "pulse 1.5s ease-in-out infinite",
+                  }}
+                />
+
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "11px",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {ingestProgress.message || "Analyzing..."}
+                </span>
+
+                {(ingestProgress.current ?? 0) > 0 && (
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "11px",
+                      color: "var(--text-tertiary)",
+                      marginLeft: "auto",
+                    }}
+                  >
+                    {ingestProgress.current}/{ingestProgress.total} files
+                  </span>
+                )}
+              </div>
             )}
 
-            <div className="mt-1 flex h-10 items-end justify-between px-1">
-              <div className="flex items-end gap-4">
-                <button
-                  type="button"
-                  className={`rounded-md px-2.5 py-1.5 text-[12px] transition-all duration-200 ${
-                    activeTab === "chat"
-                      ? "bg-zinc-800 text-zinc-100 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.35)]"
-                      : "text-zinc-500 hover:bg-zinc-900/70 hover:text-zinc-300"
-                  }`}
-                  onClick={() => setActiveTab("chat")}
-                >
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-md px-2.5 py-1.5 text-[12px] transition-all duration-200 ${
-                    activeTab === "graph"
-                      ? "bg-zinc-800 text-zinc-100 shadow-[inset_0_0_0_1px_rgba(167,139,250,0.35)]"
-                      : "text-zinc-500 hover:bg-zinc-900/70 hover:text-zinc-300"
-                  }`}
-                  onClick={() => setActiveTab("graph")}
-                >
-                  Graph
-                </button>
-              </div>
-              <div className="mb-1 flex items-center gap-2">
-                {isIngested && sessionId && (
-                  <>
-                    <select
-                      value={onboardingPersona}
-                      onChange={(event) => {
-                        const value = event.target.value as "fullstack" | "backend" | "frontend";
-                        setOnboardingPersona(value);
-                      }}
-                      className="h-7 rounded-md border border-zinc-700 bg-zinc-900 px-2 text-[10px] text-zinc-300 outline-none"
-                    >
-                      <option value="fullstack">fullstack</option>
-                      <option value="backend">backend</option>
-                      <option value="frontend">frontend</option>
-                    </select>
+            <div
+              style={{
+                display: "flex",
+                borderBottom: "1px solid var(--border-subtle)",
+                padding: "0 16px",
+                gap: "0",
+                flexShrink: 0,
+              }}
+            >
+              {["Chat", "Graph"].map((tab) => {
+                const tabValue = tab.toLowerCase() as "chat" | "graph";
+                const isActive = activeTab === tabValue;
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void generateOnboardingBrief();
-                      }}
-                      disabled={isOnboardingLoading}
-                      className="h-7 rounded-md border border-violet-500/40 bg-violet-500/10 px-2.5 text-[10px] font-medium text-violet-300 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {isOnboardingLoading ? "Generating..." : "Generate Brief"}
-                    </button>
-                  </>
-                )}
-
-                {messages.length > 0 && (
-                  <div className="rounded-[6px] border border-white/10 bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-300">
-                    {messages.length}
-                  </div>
-                )}
-                </div>
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setActiveTab(tabValue)}
+                    style={{
+                      height: "40px",
+                      padding: "0 12px",
+                      background: "transparent",
+                      border: "none",
+                      borderBottom: isActive ? "1px solid var(--text-primary)" : "1px solid transparent",
+                      marginBottom: "-1px",
+                      fontSize: "12px",
+                      fontWeight: isActive ? 500 : 400,
+                      color: isActive ? "var(--text-primary)" : "var(--text-tertiary)",
+                      cursor: "pointer",
+                      transition: "color 150ms",
+                      fontFamily: "var(--font-sans)",
+                    }}
+                  >
+                    {tab}
+                  </button>
+                );
+              })}
             </div>
           </div>
           )}
@@ -1311,10 +1415,10 @@ export default function NeuronPage() {
 
             {!sessionId && !isIngesting ? (
               <div className="flex h-full flex-col items-center justify-center">
-                <p className="font-mono text-[48px] text-zinc-800">neuron</p>
+                <p className="text-[48px] font-semibold tracking-tight text-zinc-700">neuron</p>
                 <p className="mt-2 text-[14px] text-zinc-600">What codebase do you want to explore?</p>
 
-                <div className="mt-6 flex w-full max-w-lg items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900/60 px-3 h-10">
+                <div className="mt-6 flex h-10 w-full max-w-lg items-center gap-2 rounded-md border border-zinc-700/80 bg-zinc-900/70 px-3">
                   <input
                     ref={urlInputRef}
                     type="text"
@@ -1322,7 +1426,7 @@ export default function NeuronPage() {
                     onChange={(event) => setRepoUrl(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
-                        void handleAnalyze();
+                        void handleIngest();
                       }
                     }}
                     placeholder="github.com/owner/repo"
@@ -1332,10 +1436,10 @@ export default function NeuronPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      void handleAnalyze();
+                      void handleIngest();
                     }}
                     disabled={!repoUrl.trim() || isIngesting}
-                    className="h-7 rounded-md bg-violet-600 px-3 text-[12px] font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="h-7 rounded-md bg-sky-600 px-3 text-[12px] font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Analyze
                   </button>
@@ -1351,7 +1455,7 @@ export default function NeuronPage() {
                       key={exampleRepo}
                       type="button"
                       onClick={() => setRepoUrl(`https://github.com/${exampleRepo}`)}
-                      className="rounded-md border border-zinc-800 px-3 py-1.5 text-[11px] text-zinc-500 transition hover:border-violet-500/30 hover:text-violet-300"
+                      className="rounded-md border border-zinc-700/80 px-3 py-1.5 text-[11px] text-zinc-500 transition hover:border-sky-500/35 hover:text-sky-300"
                     >
                       {exampleRepo}
                     </button>
@@ -1360,7 +1464,7 @@ export default function NeuronPage() {
               </div>
             ) : (
             activeTab === "chat" ? (
-              <div className="flex h-full flex-col overflow-hidden rounded-[10px] border border-white/10 bg-[#0f0f11]/95 shadow-[0_20px_60px_rgba(0,0,0,0.35)]" style={{ animation: "tab-in 180ms ease-out" }}>
+              <div className="flex h-full flex-col overflow-hidden rounded-[10px] border border-zinc-700/60 bg-[#111722]/95 shadow-[0_20px_60px_rgba(0,0,0,0.35)]" style={{ animation: "tab-in 180ms ease-out" }}>
                 {sessionId && (
                   <div className="border-b border-zinc-800/60 px-8 py-3">
                     <p className="font-mono text-[13px] text-zinc-400">{repoDisplayName}</p>
@@ -1369,10 +1473,7 @@ export default function NeuronPage() {
                     </p>
                   </div>
                 )}
-                <div
-                  ref={messageContainerRef}
-                  className="min-h-0 flex-1 overflow-y-auto px-8 py-6 space-y-8 scrollbar-thin"
-                >
+                <div ref={messageContainerRef} className="min-h-0 flex-1 overflow-y-auto px-8 py-6 scrollbar-thin">
                   {!isIngested && messages.length === 0 ? (
                     <div className="flex h-full flex-col items-center justify-center">
                       <p className="pointer-events-none select-none text-[80px] font-semibold leading-none text-zinc-900">neuron</p>
@@ -1386,7 +1487,8 @@ export default function NeuronPage() {
                           <button
                             type="button"
                             key={suggestion}
-                            className="rounded-md border border-zinc-800 px-3 py-2 text-left text-[11px] text-zinc-500 transition-all duration-150 hover:border-violet-500/40 hover:bg-violet-500/5 hover:text-violet-400"
+                            disabled={isChatLoading}
+                            className="rounded-md border border-zinc-700/70 px-3 py-2 text-left text-[11px] text-zinc-400 transition-all duration-150 hover:border-sky-500/35 hover:bg-sky-500/10 hover:text-sky-300"
                             onClick={() => {
                               void sendMessage(suggestion);
                             }}
@@ -1397,111 +1499,83 @@ export default function NeuronPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="space-y-8">
+                    <div style={{ maxWidth: "680px", margin: "0 auto", padding: "24px 32px" }}>
                       {messages.map((message, index) => {
                         const isUser = message.role === "user";
+                        const isThinking = message.id.startsWith("local-thinking-");
                         const isError = message.text.startsWith("Error:") || message.text.startsWith("I encountered");
-                        const timeAgo = formatTimeAgo(message.createdAt, nowTick);
 
                         return (
-                          <div
-                            key={message.id}
-                            className={`group relative space-y-3 ${isUser ? "flex flex-col items-end" : ""}`}
-                          >
-                            <div className={`flex items-center gap-2 ${isUser ? "justify-end" : ""}`}>
-                              <span
-                                className={`text-[10px] font-medium uppercase tracking-widest ${
-                                  isUser
-                                    ? "rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2 py-0.5 text-emerald-300"
-                                    : "text-violet-500"
-                                }`}
-                              >
-                                {isUser ? "you" : "neuron"}
-                              </span>
-                              <span className="text-[10px] text-zinc-700">{timeAgo}</span>
+                          <div key={message.id}>
+                            <div
+                              style={{
+                                fontSize: "11px",
+                                fontFamily: "var(--font-mono)",
+                                color: isUser ? "var(--text-tertiary)" : "var(--text-primary)",
+                                marginBottom: "6px",
+                                fontWeight: 500,
+                              }}
+                            >
+                              {isUser ? "you" : "neuron"}
                             </div>
 
                             <div
-                              className={`relative max-w-[85%] rounded-2xl border px-4 py-3 text-[13px] leading-7 ${
-                                isUser
-                                  ? "ml-auto border-emerald-400/25 bg-emerald-500/[0.10] text-right text-zinc-100 shadow-[0_8px_30px_rgba(16,185,129,0.10)]"
-                                  : "border-zinc-800/80 bg-zinc-900/40 text-zinc-200"
-                              }`}
+                              style={{
+                                fontSize: "14px",
+                                lineHeight: 1.7,
+                                color: isUser ? "var(--text-secondary)" : "var(--text-primary)",
+                                fontFamily: "var(--font-sans)",
+                              }}
                             >
-                              {!isUser && (
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    await navigator.clipboard.writeText(message.text);
-                                    setCopiedId(message.id);
-                                    window.setTimeout(() => {
-                                      setCopiedId((prev) => (prev === message.id ? null : prev));
-                                    }, 2000);
-                                  }}
-                                  className="absolute right-0 -top-6 hidden text-[10px] text-zinc-600 hover:text-zinc-300 group-hover:block"
-                                >
-                                  {copiedId === message.id ? "Copied!" : "Copy"}
-                                </button>
-                              )}
-
                               {isUser ? (
-                                <p className="whitespace-pre-wrap text-zinc-100">{message.text}</p>
+                                <p className="whitespace-pre-wrap" style={{ borderLeft: "2px solid var(--border-soft)", paddingLeft: "10px", fontFamily: "var(--font-mono)" }}>
+                                  {message.text}
+                                </p>
+                              ) : isThinking ? (
+                                <div className="flex items-center gap-2" style={{ color: "var(--text-secondary)" }}>
+                                  <span
+                                    style={{
+                                      width: "6px",
+                                      height: "6px",
+                                      borderRadius: "50%",
+                                      backgroundColor: "var(--text-primary)",
+                                      animation: "pulse 1.2s ease-in-out infinite",
+                                    }}
+                                  />
+                                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px" }}>thinking...</span>
+                                </div>
                               ) : isError ? (
-                                <p className="whitespace-pre-wrap text-red-400">{`⚠ ${message.text}`}</p>
+                                <p className="whitespace-pre-wrap" style={{ color: "var(--error)" }}>{message.text}</p>
                               ) : (
-                                <div className="text-zinc-200">
+                                <div>
                                   <ReactMarkdown
                                     remarkPlugins={[remarkGfm]}
                                     components={{
-                                      p: ({ children }) => (
-                                        <p className="mb-3 text-[13px] leading-7 text-zinc-200 last:mb-0">{children}</p>
-                                      ),
-                                      strong: ({ children }) => (
-                                        <strong className="font-semibold text-zinc-100">{children}</strong>
-                                      ),
-                                      ul: ({ children }) => (
-                                        <ul className="mb-3 list-none space-y-1.5 pl-0">{children}</ul>
-                                      ),
-                                      li: ({ children }) => (
-                                        <li className="flex gap-2 text-[13px] leading-6 text-zinc-300">
-                                          <span className="mt-2 h-1 w-1 flex-shrink-0 rounded-full bg-violet-400" />
-                                          <span>{children}</span>
-                                        </li>
-                                      ),
+                                      p: ({ children }) => <p className="mb-3 text-[14px] leading-[1.7] last:mb-0">{children}</p>,
+                                      strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                                      ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
+                                      li: ({ children }) => <li className="text-[14px] leading-[1.7]">{children}</li>,
                                       code: ({ inline, children }: MarkdownCodeProps) =>
                                         inline ? (
-                                          <code className="rounded border border-zinc-700/50 bg-zinc-800 px-1.5 py-0.5 font-mono text-[12px] text-violet-300">
+                                          <code className="rounded-[4px] border px-1.5 py-0.5 font-mono text-[12px]" style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-elevated)" }}>
                                             {children}
                                           </code>
                                         ) : (
-                                          <pre className="my-3 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-                                            <code className="font-mono text-[12px] leading-relaxed text-zinc-300">
-                                              {children}
-                                            </code>
+                                          <pre className="my-3 overflow-x-auto rounded-[6px] border p-3" style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-elevated)" }}>
+                                            <code className="font-mono text-[12px] leading-relaxed">{children}</code>
                                           </pre>
                                         ),
-                                      h1: ({ children }) => (
-                                        <h1 className="mb-2 mt-4 text-base font-semibold text-zinc-100">{children}</h1>
-                                      ),
-                                      h2: ({ children }) => (
-                                        <h2 className="mb-2 mt-3 text-[13px] font-semibold text-zinc-200">{children}</h2>
-                                      ),
-                                      h3: ({ children }) => (
-                                        <h3 className="mb-1 mt-3 text-[13px] font-medium text-zinc-300">{children}</h3>
-                                      ),
+                                      h1: ({ children }) => <h1 className="mb-2 mt-4 text-base font-semibold">{children}</h1>,
+                                      h2: ({ children }) => <h2 className="mb-2 mt-3 text-[14px] font-semibold">{children}</h2>,
+                                      h3: ({ children }) => <h3 className="mb-1 mt-3 text-[13px] font-medium">{children}</h3>,
                                       blockquote: ({ children }) => (
-                                        <blockquote className="my-2 border-l-2 border-violet-500/40 pl-3 text-[13px] italic text-zinc-400">
+                                        <blockquote className="my-2 border-l-2 pl-3 text-[13px] italic" style={{ borderColor: "var(--border-soft)", color: "var(--text-secondary)" }}>
                                           {children}
                                         </blockquote>
                                       ),
-                                      hr: () => <hr className="my-4 border-zinc-800" />,
+                                      hr: () => <hr className="my-4" style={{ borderColor: "var(--border-subtle)" }} />,
                                       a: ({ href, children }) => (
-                                        <a
-                                          href={href}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-violet-400 underline underline-offset-2 hover:text-violet-300"
-                                        >
+                                        <a href={href} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2" style={{ color: "var(--text-primary)" }}>
                                           {children}
                                         </a>
                                       ),
@@ -1511,85 +1585,67 @@ export default function NeuronPage() {
                                   </ReactMarkdown>
                                 </div>
                               )}
-
-                              {isError && (
-                                <button
-                                  type="button"
-                                  className="mt-2 text-[10px] text-zinc-500 hover:text-zinc-300"
-                                  onClick={() => {
-                                    const retryText =
-                                      [...messages]
-                                        .reverse()
-                                        .find((item) => item.role === "user")?.text || lastQuestion;
-
-                                    if (retryText) {
-                                      void sendMessage(retryText);
-                                    }
-                                  }}
-                                >
-                                  Try again
-                                </button>
-                              )}
-
-                              {!isUser && index === lastAssistantIndex && (
-                                <div className="mt-6 flex flex-wrap gap-2">
-                                  {buildFollowUps().slice(0, 4).map((chip) => (
-                                    <button
-                                      key={chip}
-                                      type="button"
-                                      onClick={() => {
-                                        void sendMessage(chip);
-                                      }}
-                                      className="rounded-md border border-zinc-800 px-3 py-2 text-left text-[11px] text-zinc-500 transition-all duration-150 hover:border-violet-500/40 hover:bg-violet-500/5 hover:text-violet-400"
-                                    >
-                                      {chip}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
                             </div>
 
-                            {index < messages.length - 1 && <hr className="border-zinc-800/50" />}
+                            {!isUser && index === lastAssistantIndex && (
+                              <div className="mt-6 flex flex-wrap gap-2">
+                                {buildFollowUps().slice(0, 4).map((chip) => (
+                                  <button
+                                    key={chip}
+                                    type="button"
+                                    disabled={isChatLoading}
+                                    onClick={() => {
+                                      void sendMessage(chip);
+                                    }}
+                                    className="rounded-[6px] border px-3 py-2 text-left text-[11px] transition-all duration-150"
+                                    style={{
+                                      borderColor: "var(--border-subtle)",
+                                      color: "var(--text-secondary)",
+                                      backgroundColor: "transparent",
+                                    }}
+                                  >
+                                    {chip}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+
+                            {index < messages.length - 1 && (
+                              <div style={{ height: "1px", background: "var(--border-subtle)", margin: "20px 0" }} />
+                            )}
                           </div>
                         );
                       })}
 
-                      {isChatLoading && (
-                        <div className="flex flex-col gap-3">
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-medium uppercase tracking-widest text-violet-500">
-                              neuron
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-4 items-end gap-[3px]">
-                              {[0, 1, 2, 3, 4].map((i) => (
-                                <div
-                                  key={i}
-                                  className="w-[3px] rounded-full bg-violet-400"
-                                  style={{
-                                    height: `${Math.random() * 100}%`,
-                                    animation: `equalizer 0.8s ease-in-out ${i * 0.1}s infinite alternate`,
-                                    minHeight: "4px",
-                                  }}
-                                />
-                              ))}
-                            </div>
-                            <span className="text-[12px] text-zinc-500">Analyzing codebase...</span>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
 
-                <div className="flex-shrink-0 border-t border-zinc-800/50 px-8 py-4">
+                <div
+                  style={{
+                    borderTop: "1px solid var(--border-subtle)",
+                    padding: "12px 16px",
+                    flexShrink: 0,
+                  }}
+                >
                   <div
-                    className={`flex items-end gap-3 rounded-xl border px-4 py-3 transition-all duration-200 ${
-                      isIngested
-                        ? "border-zinc-700/60 bg-zinc-900/40 focus-within:border-violet-500/30"
-                        : "cursor-not-allowed border-zinc-800/40 opacity-40"
-                    }`}
+                    onFocus={() => setIsComposerFocused(true)}
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                        setIsComposerFocused(false);
+                      }
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-end",
+                      gap: "8px",
+                      padding: "10px 12px",
+                      border: `1px solid ${isComposerFocused ? "var(--border-strong)" : "var(--border-subtle)"}`,
+                      borderRadius: "var(--radius-md)",
+                      backgroundColor: "var(--bg-elevated)",
+                      transition: "border-color 150ms",
+                      opacity: !isIngested ? 0.45 : 1,
+                    }}
                   >
                     <textarea
                       ref={textareaRef}
@@ -1602,38 +1658,72 @@ export default function NeuronPage() {
                         }
                       }}
                       disabled={!isIngested || isChatLoading || !sessionId}
-                      placeholder={isIngested ? "Message neuron..." : "Ingest a repository first"}
+                      placeholder={isIngested ? "Ask about the codebase..." : "Ingest a repository first"}
                       rows={1}
-                      className="min-h-[24px] max-h-[160px] flex-1 resize-none bg-transparent py-0 font-mono text-[13px] leading-relaxed text-zinc-200 outline-none placeholder-zinc-700"
+                      style={{
+                        flex: 1,
+                        background: "transparent",
+                        border: "none",
+                        outline: "none",
+                        resize: "none",
+                        fontSize: "13px",
+                        fontFamily: "var(--font-sans)",
+                        color: "var(--text-primary)",
+                        lineHeight: 1.6,
+                        minHeight: "20px",
+                        maxHeight: "160px",
+                      }}
                     />
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void sendMessage(chatInput);
-                      }}
-                      disabled={chatInput.trim().length === 0 || !isIngested || isChatLoading || !sessionId}
-                      className="mb-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-violet-500 transition-all duration-150 hover:bg-violet-400 disabled:pointer-events-none disabled:opacity-0"
-                    >
-                      <svg className="h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2.5}
-                          d="M5 12h14M12 5l7 7-7 7"
-                        />
-                      </svg>
-                    </button>
+                    {chatInput.trim().length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void sendMessage(chatInput);
+                        }}
+                        disabled={!isIngested || isChatLoading || !sessionId}
+                        style={{
+                          width: "24px",
+                          height: "24px",
+                          background: "var(--text-primary)",
+                          border: "none",
+                          borderRadius: "var(--radius-sm)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                          opacity: !isIngested || isChatLoading || !sessionId ? 0.4 : 1,
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--bg-app)" strokeWidth="2.5">
+                          <path d="M5 12h14M12 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
 
-                  <div className="mt-2 flex justify-between px-1">
-                    <span className="text-[10px] text-zinc-800">{isIngested ? `${messages.length} messages` : ""}</span>
-                    <span className="font-mono text-[10px] text-zinc-800">↵ send · ⇧↵ newline</span>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      marginTop: "6px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--text-tertiary)",
+                      }}
+                    >
+                      ↵ send · ⇧↵ newline
+                    </span>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="flex h-full flex-col overflow-hidden rounded-[10px] border border-white/10 bg-[#0f0f11]/95 shadow-[0_20px_60px_rgba(0,0,0,0.35)]" style={{ animation: "tab-in 180ms ease-out" }}>
+              <div className="flex h-full flex-col overflow-hidden rounded-[10px] border border-zinc-700/60 bg-[#111722]/95 shadow-[0_20px_60px_rgba(0,0,0,0.35)]" style={{ animation: "tab-in 180ms ease-out" }}>
                 {graph ? (
                   <>
                     <div className="flex items-center gap-4 border-b border-zinc-800/40 px-4 py-2 font-mono text-[11px] text-zinc-600">
@@ -1649,7 +1739,7 @@ export default function NeuronPage() {
                       </div>
                     </div>
 
-                    <div className="relative min-h-0 flex-1 overflow-hidden bg-[radial-gradient(400px_220px_at_50%_20%,rgba(124,58,237,0.08),transparent_60%)]">
+                    <div className="relative min-h-0 flex-1 overflow-hidden bg-[radial-gradient(420px_220px_at_50%_20%,rgba(0,112,243,0.14),transparent_65%)]">
                       <div ref={graphRef} className="h-full w-full overflow-hidden" />
                       <div className="absolute bottom-3 left-3 rounded-md bg-black/60 px-2 py-2 text-[10px] text-zinc-400">
                         <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-blue-500" />TS</div>
@@ -1673,59 +1763,157 @@ export default function NeuronPage() {
         </section>
 
         <aside
-          className={`overflow-hidden border-l border-white/10 bg-[#0f0f11] transition-all duration-300 ${
-            panelOpen ? "w-[300px]" : "w-0"
-          }`}
+          className="w-[220px] shrink-0 overflow-hidden border-l"
+          style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-surface)" }}
         >
-          {panelOpen && selectedFile && (
-            <div className="h-full px-4 py-4">
-              <div className="mb-4 flex items-start justify-between">
-                <p className="pr-3 text-[11px] text-zinc-500">{selectedFile}</p>
-                <button
-                  type="button"
-                  className="text-zinc-600 hover:text-zinc-300"
-                  onClick={() => setPanelOpen(false)}
-                >
-                  ×
-                </button>
-              </div>
+          <div
+            style={{
+              padding: "16px 12px 6px",
+              fontSize: "11px",
+              fontWeight: 500,
+              color: "var(--text-tertiary)",
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              fontFamily: "var(--font-sans)",
+            }}
+          >
+            Files
+          </div>
 
-              <p className="text-[13px] leading-[1.8] text-zinc-300">
-                {summaries[selectedFile] || "No summary available."}
+          <div
+            style={{
+              margin: "8px",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              padding: "0 8px",
+              height: "28px",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: "var(--radius-sm)",
+              backgroundColor: "var(--bg-elevated)",
+            }}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.35-4.35" />
+            </svg>
+            <input
+              value={fileFilter}
+              onChange={(event) => setFileFilter(event.target.value)}
+              placeholder="Filter..."
+              style={{
+                flex: 1,
+                background: "transparent",
+                border: "none",
+                outline: "none",
+                fontSize: "11px",
+                fontFamily: "var(--font-mono)",
+                color: "var(--text-primary)",
+              }}
+            />
+          </div>
+
+          <div className="h-[calc(100%-80px)] overflow-y-auto pb-2">
+            {filteredFiles.length === 0 ? (
+              <p className="px-3 py-2 text-[11px]" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                {files.length === 0 ? "No files yet" : "No matches"}
               </p>
+            ) : (
+              filteredFiles.map((item) => {
+                const isSelected = selectedFile === item.path;
+                const langColor = getLangColor(item.language);
+                const segments = item.path.split("/");
+                const displayName = segments[segments.length - 1] || item.path;
 
-              <button
-                type="button"
-                className="mt-6 text-[11px] text-violet-400"
-                onClick={() => {
-                  void sendMessage(`Explain file \`${selectedFile}\` in more detail`);
-                  setActiveTab("chat");
-                }}
-              >
-                Ask about this file →
-              </button>
-            </div>
-          )}
+                return (
+                  <button
+                    key={item.path}
+                    type="button"
+                    onClick={() => setSelectedFile(item.path)}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "4px 12px",
+                      background: isSelected ? "var(--bg-elevated)" : "transparent",
+                      border: "none",
+                      borderLeft: isSelected ? "2px solid var(--text-primary)" : "2px solid transparent",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      transition: "background 100ms",
+                    }}
+                    title={item.path}
+                  >
+                    <span
+                      style={{
+                        width: "4px",
+                        height: "4px",
+                        borderRadius: "50%",
+                        backgroundColor: langColor,
+                        flexShrink: 0,
+                      }}
+                    />
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        fontFamily: "var(--font-mono)",
+                        color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        flex: 1,
+                      }}
+                    >
+                      {displayName}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
         </aside>
       </div>
 
-      <footer className="flex h-6 items-center justify-between border-t border-white/5 px-3 text-[11px]">
-        <div className="flex items-center gap-2 text-zinc-600">
+      <footer
+        style={{
+          height: "24px",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          padding: "0 12px",
+          borderTop: "1px solid var(--border-subtle)",
+          backgroundColor: "var(--bg-surface)",
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
           <span
-            className={`h-1.5 w-1.5 rounded-full ${
-              statusText === "error"
-                ? "bg-red-500"
-                : isIngesting
-                ? "animate-pulse bg-violet-400"
-                : isIngested
-                ? "bg-emerald-400"
-                : "bg-zinc-500"
-            }`}
+            style={{
+              width: "5px",
+              height: "5px",
+              borderRadius: "50%",
+              backgroundColor: isIngested ? "var(--success)" : "var(--text-tertiary)",
+            }}
           />
-          <span>{statusLeftText}</span>
+          <span
+            style={{
+              fontSize: "11px",
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {isIngested ? `${repoDisplayName} · ${files.length} files` : "no repository"}
+          </span>
         </div>
-        <div className="text-zinc-700">
-          {currentModel} · {messages.length} messages · session: {sessionId ? sessionId.slice(0, 8) : "-"}
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: "12px" }}>
+          <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--text-tertiary)" }}>
+            gemini 1.5 flash
+          </span>
+          <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--text-tertiary)" }}>
+            {messages.length} messages
+          </span>
         </div>
       </footer>
     </main>

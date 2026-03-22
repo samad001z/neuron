@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
+  const next = searchParams.get("next") || "/";
 
   if (code) {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -33,5 +34,6 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.redirect(origin);
+  const safeNext = next.startsWith("/") ? next : "/";
+  return NextResponse.redirect(`${origin}${safeNext}`);
 }

@@ -1,14 +1,16 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabase";
 
 type AuthMode = "signin" | "signup";
 
 export default function AuthPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const supabase = useMemo(() => createBrowserClient(), []);
+  const nextPath = searchParams.get("next") || "/";
 
   const [mode, setMode] = useState<AuthMode>("signin");
   const [fullName, setFullName] = useState<string>("");
@@ -16,26 +18,34 @@ export default function AuthPage() {
   const [password, setPassword] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorText, setErrorText] = useState<string>("");
+  const [infoText, setInfoText] = useState<string>("");
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     setErrorText("");
+    setInfoText("");
     setIsLoading(true);
 
     try {
       if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
             data: {
               full_name: fullName,
             },
+            emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`,
           },
         });
 
         if (error) {
           setErrorText(error.message);
+          return;
+        }
+
+        if (!data.session) {
+          setInfoText("Check your email and confirm your account. You will be redirected automatically after confirmation.");
           return;
         }
       } else {
@@ -47,7 +57,7 @@ export default function AuthPage() {
         }
       }
 
-      router.push("/");
+      router.push(nextPath);
       router.refresh();
     } finally {
       setIsLoading(false);
@@ -62,7 +72,7 @@ export default function AuthPage() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`,
         },
       });
 
@@ -157,6 +167,7 @@ export default function AuthPage() {
           </button>
 
           {errorText && <p className="text-[12px] text-red-400">{errorText}</p>}
+          {infoText && <p className="text-[12px] text-zinc-400">{infoText}</p>}
         </form>
 
         <div className="my-5 flex items-center gap-3">
