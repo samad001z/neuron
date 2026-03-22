@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "app/api/security/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/wiki/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/pr/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}

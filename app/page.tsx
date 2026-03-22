@@ -54,7 +54,33 @@ type PrExplainResponse = {
     changedFiles: number;
     additions: number;
     deletions: number;
+    risk?: "LOW" | "MEDIUM" | "HIGH";
   };
+  error?: string;
+};
+
+type SecuritySummary = {
+  total: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  score: number;
+  repoName: string;
+  fileCount: number;
+  generatedAt: string;
+};
+
+type SecurityResponse = {
+  report?: string;
+  summary?: SecuritySummary;
+  error?: string;
+};
+
+type WikiResponse = {
+  wiki?: string;
+  wordCount?: number;
+  sectionCount?: number;
   error?: string;
 };
 
@@ -170,6 +196,28 @@ function getHistoryBucket(dateLike: Date | string): string {
   return target.toLocaleDateString([], { month: "long" });
 }
 
+function extractRiskFromAnalysis(analysis: string): "LOW" | "MEDIUM" | "HIGH" | undefined {
+  const upper = analysis.toUpperCase();
+
+  if (upper.includes("RISK") && upper.includes("HIGH")) {
+    return "HIGH";
+  }
+
+  if (upper.includes("RISK") && upper.includes("MEDIUM")) {
+    return "MEDIUM";
+  }
+
+  if (upper.includes("RISK") && upper.includes("LOW")) {
+    return "LOW";
+  }
+
+  if (upper.includes("OVERALL RISK: HIGH")) return "HIGH";
+  if (upper.includes("OVERALL RISK: MEDIUM")) return "MEDIUM";
+  if (upper.includes("OVERALL RISK: LOW")) return "LOW";
+
+  return undefined;
+}
+
 export default function NeuronPage() {
   const router = useRouter();
   const [repoUrl, setRepoUrl] = useState<string>("");
@@ -186,7 +234,7 @@ export default function NeuronPage() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [, setSummaries] = useState<Record<string, string>>({});
   const [graph, setGraph] = useState<GraphData | null>(null);
-  const [activeTab, setActiveTab] = useState<"chat" | "graph">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "graph" | "pr-review" | "security" | "wiki">("chat");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [messages, setMessages] = useState<AppMessage[]>([]);
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
@@ -208,10 +256,16 @@ export default function NeuronPage() {
   const [nowTick, setNowTick] = useState<number>(Date.now());
   const [, setCurrentModel] = useState<string>("resolving");
   const [fileFilter, setFileFilter] = useState<string>("");
-  const [prUrlInput, setPrUrlInput] = useState<string>("");
-  const [isPrLoading, setIsPrLoading] = useState<boolean>(false);
-  const [prError, setPrError] = useState<string | null>(null);
-  const [prMeta, setPrMeta] = useState<PrExplainResponse["prMetadata"] | null>(null);
+  const [prUrl, setPrUrl] = useState<string>("");
+  const [prAnalysis, setPrAnalysis] = useState<string>("");
+  const [prMetadata, setPrMetadata] = useState<PrExplainResponse["prMetadata"] | null>(null);
+  const [isAnalyzingPR, setIsAnalyzingPR] = useState<boolean>(false);
+  const [securityReport, setSecurityReport] = useState<string>("");
+  const [securitySummary, setSecuritySummary] = useState<SecuritySummary | null>(null);
+  const [isAuditing, setIsAuditing] = useState<boolean>(false);
+  const [wikiContent, setWikiContent] = useState<string>("");
+  const [wikiMeta, setWikiMeta] = useState<{ wordCount: number; sectionCount: number } | null>(null);
+  const [isGeneratingWiki, setIsGeneratingWiki] = useState<boolean>(false);
 
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -628,38 +682,107 @@ export default function NeuronPage() {
     [isChatLoading, isIngested, loadInitialMessages, sessionId],
   );
 
-  const handlePrExplain = useCallback(async (): Promise<void> => {
-    const trimmedPrUrl = prUrlInput.trim();
-
-    if (!trimmedPrUrl || !sessionId || isPrLoading) {
+  async function handleAnalyzePR(): Promise<void> {
+    if (!sessionId || !prUrl.trim() || isAnalyzingPR) {
       return;
     }
 
-    setIsPrLoading(true);
-    setPrError(null);
+    setIsAnalyzingPR(true);
+    setPrAnalysis("");
+    setPrMetadata(null);
 
     try {
-      const response = await fetch("/api/pr", {
+      const res = await fetch("/api/pr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prUrl: trimmedPrUrl, sessionId }),
+        body: JSON.stringify({ prUrl, sessionId }),
       });
 
-      const payload = (await response.json()) as PrExplainResponse;
+      const data = (await res.json()) as PrExplainResponse;
 
-      if (!response.ok || !payload.analysis) {
-        throw new Error(payload.error || "Failed to analyze PR");
+      if (data.error || !data.analysis) {
+        throw new Error(data.error || "Failed to analyze PR");
       }
 
-      setPrMeta(payload.prMetadata ?? null);
+      setPrAnalysis(data.analysis);
+      setPrMetadata(
+        data.prMetadata
+          ? {
+              ...data.prMetadata,
+              risk: data.prMetadata.risk ?? extractRiskFromAnalysis(data.analysis),
+            }
+          : null,
+      );
       await loadInitialMessages(sessionId);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Failed to analyze PR";
-      setPrError(message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to analyze PR";
+      setPrAnalysis(`Error: ${message}`);
     } finally {
-      setIsPrLoading(false);
+      setIsAnalyzingPR(false);
     }
-  }, [isPrLoading, loadInitialMessages, prUrlInput, sessionId]);
+  }
+
+  async function handleSecurityAudit(): Promise<void> {
+    if (!sessionId || isAuditing) {
+      return;
+    }
+
+    setIsAuditing(true);
+    setSecurityReport("");
+    setSecuritySummary(null);
+
+    try {
+      const res = await fetch("/api/security", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+
+      const data = (await res.json()) as SecurityResponse;
+
+      if (!res.ok || data.error || !data.report || !data.summary) {
+        throw new Error(data.error || "Failed to run security audit");
+      }
+
+      setSecurityReport(data.report);
+      setSecuritySummary(data.summary);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to run security audit";
+      setSecurityReport(`Error: ${message}`);
+    } finally {
+      setIsAuditing(false);
+    }
+  }
+
+  async function handleGenerateWiki(): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    setIsGeneratingWiki(true);
+    try {
+      const res = await fetch("/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+
+      const data = (await res.json()) as WikiResponse;
+
+      if (!res.ok || data.error || !data.wiki) {
+        throw new Error(data.error || "Failed to generate wiki");
+      }
+
+      setWikiContent(data.wiki);
+      setWikiMeta({ wordCount: data.wordCount ?? 0, sectionCount: data.sectionCount ?? 0 });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to generate wiki";
+      setWikiContent(`Error: ${message}`);
+      setWikiMeta(null);
+    } finally {
+      setIsGeneratingWiki(false);
+    }
+  }
 
   const handleIngest = async (): Promise<void> => {
     const trimmedUrl = repoUrl.trim();
@@ -1423,8 +1546,15 @@ export default function NeuronPage() {
                 flexShrink: 0,
               }}
             >
-              {["Chat", "Graph"].map((tab) => {
-                const tabValue = tab.toLowerCase() as "chat" | "graph";
+              {["Chat", "Graph", "PR Review", "Security", "Wiki"].map((tab) => {
+                const tabValue =
+                  tab === "PR Review"
+                    ? "pr-review"
+                    : tab === "Security"
+                    ? "security"
+                    : tab === "Wiki"
+                    ? "wiki"
+                    : (tab.toLowerCase() as "chat" | "graph");
                 const isActive = activeTab === tabValue;
 
                 return (
@@ -1520,50 +1650,6 @@ export default function NeuronPage() {
                     <p className="text-[11px] text-zinc-600">
                       ingested {indexedAt ? formatTimeAgo(indexedAt, nowTick) : "-"} · {files.length} files
                     </p>
-                    <div className="mt-3 flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={prUrlInput}
-                        onChange={(event) => setPrUrlInput(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            void handlePrExplain();
-                          }
-                        }}
-                        placeholder="Paste GitHub PR URL for explainer"
-                        className="h-8 min-w-0 flex-1 rounded-md border bg-transparent px-2.5 text-[12px] outline-none"
-                        style={{
-                          borderColor: "var(--border-subtle)",
-                          color: "var(--text-primary)",
-                          fontFamily: "var(--font-mono)",
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void handlePrExplain();
-                        }}
-                        disabled={!prUrlInput.trim() || isPrLoading}
-                        className="h-8 rounded-md px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
-                        style={{
-                          background: "var(--text-primary)",
-                          color: "var(--bg-app)",
-                          fontFamily: "var(--font-sans)",
-                        }}
-                      >
-                        {isPrLoading ? "Explaining..." : "Explain PR"}
-                      </button>
-                    </div>
-                    {prMeta && (
-                      <p className="mt-2 text-[11px]" style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
-                        {prMeta.title} · @{prMeta.author} · {prMeta.changedFiles} files · +{prMeta.additions} -{prMeta.deletions}
-                      </p>
-                    )}
-                    {prError && (
-                      <p className="mt-2 text-[11px]" style={{ color: "var(--error)", fontFamily: "var(--font-mono)" }}>
-                        {prError}
-                      </p>
-                    )}
                   </div>
                 )}
                 <div ref={messageContainerRef} className="min-h-0 flex-1 overflow-y-auto px-8 py-6 scrollbar-thin">
@@ -1815,7 +1901,7 @@ export default function NeuronPage() {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : activeTab === "graph" ? (
               <div className="flex h-full flex-col overflow-hidden rounded-[10px] border border-zinc-700/60 bg-[#111722]/95 shadow-[0_20px_60px_rgba(0,0,0,0.35)]" style={{ animation: "tab-in 180ms ease-out" }}>
                 {graph ? (
                   <>
@@ -1849,6 +1935,417 @@ export default function NeuronPage() {
                     Ingest a repository to explore the dependency graph.
                   </div>
                 )}
+              </div>
+            ) : activeTab === "security" ? (
+              <div className="h-full overflow-y-auto" style={{ animation: "tab-in 180ms ease-out" }}>
+                <div style={{ padding: "24px 32px", maxWidth: "680px", margin: "0 auto" }}>
+                  {!securityReport && (
+                    <div style={{ textAlign: "center", padding: "60px 0" }}>
+                      <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "8px" }}>
+                        Run a full security audit on {repoDisplayName !== "-" ? repoDisplayName : "the ingested codebase"}
+                      </p>
+                      <p
+                        style={{
+                          fontSize: "12px",
+                          color: "var(--text-tertiary)",
+                          marginBottom: "32px",
+                          fontFamily: "var(--font-mono)",
+                        }}
+                      >
+                        Checks for XSS · SQL injection · hardcoded secrets · auth issues · prototype pollution
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleSecurityAudit();
+                        }}
+                        disabled={!isIngested || isAuditing}
+                        style={{
+                          height: "40px",
+                          padding: "0 24px",
+                          background: "var(--text-primary)",
+                          color: "var(--bg-app)",
+                          border: "none",
+                          borderRadius: "var(--radius-md)",
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          fontFamily: "var(--font-sans)",
+                          cursor: "pointer",
+                          opacity: !isIngested || isAuditing ? 0.45 : 1,
+                        }}
+                      >
+                        {isAuditing ? "Scanning codebase..." : "Run Security Audit"}
+                      </button>
+                    </div>
+                  )}
+
+                  {securitySummary && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px", marginBottom: "24px" }}>
+                      {[
+                        { label: "Critical", count: securitySummary.critical, color: "#ef4444" },
+                        { label: "High", count: securitySummary.high, color: "#f59e0b" },
+                        { label: "Medium", count: securitySummary.medium, color: "#eab308" },
+                        { label: "Low", count: securitySummary.low, color: "#22c55e" },
+                      ].map((item) => (
+                        <div
+                          key={item.label}
+                          style={{
+                            padding: "16px",
+                            textAlign: "center",
+                            background: "var(--bg-elevated)",
+                            border: `1px solid ${item.count > 0 ? `${item.color}40` : "var(--border-subtle)"}`,
+                            borderRadius: "var(--radius-md)",
+                          }}
+                        >
+                          <p
+                            style={{
+                              fontSize: "24px",
+                              fontWeight: 600,
+                              color: item.count > 0 ? item.color : "var(--text-tertiary)",
+                              fontFamily: "var(--font-mono)",
+                            }}
+                          >
+                            {item.count}
+                          </p>
+                          <p
+                            style={{
+                              fontSize: "10px",
+                              color: "var(--text-tertiary)",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                            }}
+                          >
+                            {item.label}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {securityReport && (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+                        <p style={{ fontSize: "12px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                          {securitySummary?.total} vulnerabilities found · score {securitySummary?.score}/10
+                        </p>
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (securitySummary) {
+                                const { generateSecurityReportPDF } = await import("../lib/generatePDF");
+                                generateSecurityReportPDF(securityReport, securitySummary);
+                              }
+                            }}
+                            style={{
+                              height: "32px",
+                              padding: "0 14px",
+                              background: "transparent",
+                              border: "1px solid var(--border-soft)",
+                              borderRadius: "var(--radius-md)",
+                              fontSize: "11px",
+                              color: "var(--text-secondary)",
+                              fontFamily: "var(--font-mono)",
+                              cursor: "pointer",
+                            }}
+                          >
+                            ↓ Download PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSecurityReport("");
+                              setSecuritySummary(null);
+                            }}
+                            style={{
+                              height: "32px",
+                              padding: "0 14px",
+                              background: "transparent",
+                              border: "1px solid var(--border-subtle)",
+                              borderRadius: "var(--radius-md)",
+                              fontSize: "11px",
+                              color: "var(--text-tertiary)",
+                              fontFamily: "var(--font-mono)",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Re-run
+                          </button>
+                        </div>
+                      </div>
+
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{securityReport}</ReactMarkdown>
+                    </>
+                  )}
+                </div>
+              </div>
+            ) : activeTab === "pr-review" ? (
+              <div className="h-full overflow-y-auto" style={{ animation: "tab-in 180ms ease-out" }}>
+                <div style={{ padding: "24px 32px", maxWidth: "680px", margin: "0 auto" }}>
+                  <div style={{ marginBottom: "24px" }}>
+                    <label
+                      style={{
+                        display: "block",
+                        fontSize: "11px",
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--text-tertiary)",
+                        marginBottom: "8px",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.06em",
+                      }}
+                    >
+                      Pull Request URL
+                    </label>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <input
+                        value={prUrl}
+                        onChange={(event) => setPrUrl(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            void handleAnalyzePR();
+                          }
+                        }}
+                        placeholder="https://github.com/vercel/next.js/pull/12345"
+                        style={{
+                          flex: 1,
+                          height: "36px",
+                          padding: "0 12px",
+                          background: "var(--bg-elevated)",
+                          border: "1px solid var(--border-subtle)",
+                          borderRadius: "var(--radius-md)",
+                          fontSize: "12px",
+                          fontFamily: "var(--font-mono)",
+                          color: "var(--text-primary)",
+                          outline: "none",
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleAnalyzePR();
+                        }}
+                        disabled={!prUrl.trim() || isAnalyzingPR}
+                        style={{
+                          height: "36px",
+                          padding: "0 16px",
+                          background: "var(--text-primary)",
+                          color: "var(--bg-app)",
+                          border: "none",
+                          borderRadius: "var(--radius-md)",
+                          fontSize: "12px",
+                          fontWeight: 500,
+                          fontFamily: "var(--font-sans)",
+                          cursor: "pointer",
+                          opacity: !prUrl.trim() || isAnalyzingPR ? 0.45 : 1,
+                        }}
+                      >
+                        {isAnalyzingPR ? "Analyzing..." : "Analyze PR"}
+                      </button>
+                    </div>
+                    <p
+                      style={{
+                        fontSize: "11px",
+                        color: "var(--text-tertiary)",
+                        marginTop: "6px",
+                        fontFamily: "var(--font-mono)",
+                      }}
+                    >
+                      Works on any public GitHub PR · private repos need GITHUB_TOKEN
+                    </p>
+                  </div>
+
+                  {prMetadata && (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: "16px",
+                        padding: "12px 16px",
+                        background: "var(--bg-elevated)",
+                        border: "1px solid var(--border-subtle)",
+                        borderRadius: "var(--radius-md)",
+                        marginBottom: "24px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div>
+                        <p style={{ fontSize: "10px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>TITLE</p>
+                        <p style={{ fontSize: "12px", color: "var(--text-primary)", fontFamily: "var(--font-sans)" }}>{prMetadata.title}</p>
+                      </div>
+                      <div>
+                        <p style={{ fontSize: "10px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>FILES</p>
+                        <p style={{ fontSize: "12px", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}>{prMetadata.changedFiles}</p>
+                      </div>
+                      <div>
+                        <p style={{ fontSize: "10px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>CHANGES</p>
+                        <p style={{ fontSize: "12px", fontFamily: "var(--font-mono)" }}>
+                          <span style={{ color: "#22c55e" }}>+{prMetadata.additions}</span>{" "}
+                          <span style={{ color: "#ef4444" }}>-{prMetadata.deletions}</span>
+                        </p>
+                      </div>
+                      <div>
+                        <p style={{ fontSize: "10px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>RISK</p>
+                        <p
+                          style={{
+                            fontSize: "12px",
+                            fontFamily: "var(--font-mono)",
+                            color:
+                              prMetadata.risk === "HIGH"
+                                ? "#ef4444"
+                                : prMetadata.risk === "MEDIUM"
+                                ? "#f59e0b"
+                                : "#22c55e",
+                          }}
+                        >
+                          {prMetadata.risk || "ANALYZING"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {prAnalysis && (
+                    <div style={{ fontSize: "14px", lineHeight: 1.7, color: "var(--text-primary)" }}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{prAnalysis}</ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="h-full overflow-y-auto" style={{ animation: "tab-in 180ms ease-out" }}>
+                <div style={{ padding: "24px 32px", maxWidth: "740px", margin: "0 auto" }}>
+                  {!wikiContent && (
+                    <div style={{ textAlign: "center", padding: "60px 0" }}>
+                      <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "8px" }}>
+                        Generate complete documentation for this codebase
+                      </p>
+                      <p
+                        style={{
+                          fontSize: "12px",
+                          color: "var(--text-tertiary)",
+                          marginBottom: "32px",
+                          fontFamily: "var(--font-mono)",
+                        }}
+                      >
+                        Architecture · File reference · API docs · Getting started · Core concepts
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleGenerateWiki();
+                        }}
+                        disabled={!isIngested || isGeneratingWiki}
+                        style={{
+                          height: "40px",
+                          padding: "0 24px",
+                          background: "var(--text-primary)",
+                          color: "var(--bg-app)",
+                          border: "none",
+                          borderRadius: "var(--radius-md)",
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                          opacity: !isIngested || isGeneratingWiki ? 0.45 : 1,
+                        }}
+                      >
+                        {isGeneratingWiki ? "Generating wiki..." : "Generate Wiki"}
+                      </button>
+                    </div>
+                  )}
+
+                  {wikiContent && (
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: "24px",
+                        paddingBottom: "16px",
+                        borderBottom: "1px solid var(--border-subtle)",
+                      }}
+                    >
+                      <div style={{ display: "flex", gap: "16px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                          ~{wikiMeta?.wordCount?.toLocaleString()} words
+                        </span>
+                        <span style={{ fontSize: "11px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                          {wikiMeta?.sectionCount} sections
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(wikiContent);
+                          }}
+                          style={{
+                            height: "30px",
+                            padding: "0 12px",
+                            background: "transparent",
+                            border: "1px solid var(--border-subtle)",
+                            borderRadius: "var(--radius-sm)",
+                            fontSize: "11px",
+                            color: "var(--text-tertiary)",
+                            fontFamily: "var(--font-mono)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Copy Markdown
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const blob = new Blob([wikiContent], { type: "text/markdown" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `${repoDisplayName.replace("/", "-")}-wiki.md`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          style={{
+                            height: "30px",
+                            padding: "0 12px",
+                            background: "var(--text-primary)",
+                            color: "var(--bg-app)",
+                            border: "none",
+                            borderRadius: "var(--radius-sm)",
+                            fontSize: "11px",
+                            fontWeight: 500,
+                            fontFamily: "var(--font-mono)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          ↓ Download .md
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWikiContent("");
+                            setWikiMeta(null);
+                          }}
+                          style={{
+                            height: "30px",
+                            padding: "0 12px",
+                            background: "transparent",
+                            border: "1px solid var(--border-subtle)",
+                            borderRadius: "var(--radius-sm)",
+                            fontSize: "11px",
+                            color: "var(--text-tertiary)",
+                            fontFamily: "var(--font-mono)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Regenerate
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {wikiContent && (
+                    <div style={{ fontSize: "14px", lineHeight: 1.8 }}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{wikiContent}</ReactMarkdown>
+                    </div>
+                  )}
+                </div>
               </div>
             )
             )}
