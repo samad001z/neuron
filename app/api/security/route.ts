@@ -38,19 +38,63 @@ function isMissingUserIdColumnError(message?: string): boolean {
   return lower.includes("user_id") && (lower.includes("schema cache") || lower.includes("column"));
 }
 
-function countSeverity(report: string, severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"): number {
-  const regex = new RegExp(`###\\s*\\[SEVERITY:\\s*${severity}\\]`, "gi");
-  return (report.match(regex) ?? []).length;
-}
+function parseSeverityCounts(report: string): {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  total: number;
+  score: number;
+} {
+  const text = report.toUpperCase();
 
-function extractScore(report: string): number {
-  const match = report.match(/overall\s+security\s+score:\s*(\d+(?:\.\d+)?)\s*\/\s*10/i);
+  const countOccurrences = (severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"): number => {
+    const patterns = [
+      new RegExp(`\\[SEVERITY:\\s*${severity}\\]`, "g"),
+      new RegExp(`\\[${severity}\\]`, "g"),
+      new RegExp(`\\*\\*${severity}\\*\\*`, "g"),
+      new RegExp(`SEVERITY:\\s*${severity}`, "g"),
+    ];
 
-  if (!match) {
-    return 0;
-  }
+    // Deduplicate by line so one finding isn't counted multiple times.
+    const lines = new Set<number>();
+    const reportLines = text.split("\n");
 
-  return Number(match[1]);
+    reportLines.forEach((line, idx) => {
+      if (patterns.some((pattern) => pattern.test(line))) {
+        lines.add(idx);
+      }
+
+      // Reset global regex cursors before the next line.
+      patterns.forEach((pattern) => {
+        pattern.lastIndex = 0;
+      });
+    });
+
+    return lines.size;
+  };
+
+  const critical = countOccurrences("CRITICAL");
+  const high = countOccurrences("HIGH");
+  const medium = countOccurrences("MEDIUM");
+  const low = countOccurrences("LOW");
+  const total = critical + high + medium + low;
+
+  const scoreMatches = report.match(/(\d+)\/10/g);
+  const fallbackScore = Math.max(1, 10 - (critical * 3 + high * 2 + medium * 1 + low * 0.5));
+  const parsedScore = scoreMatches
+    ? Number.parseInt(scoreMatches[scoreMatches.length - 1].split("/")[0], 10)
+    : fallbackScore;
+  const normalizedScore = Math.min(10, Math.max(1, Math.round(parsedScore)));
+
+  return {
+    critical,
+    high,
+    medium,
+    low,
+    total,
+    score: normalizedScore,
+  };
 }
 
 export async function POST(request: Request) {
@@ -139,12 +183,7 @@ After listing all vulnerabilities, add:
 - Top priority fix: [most critical issue]`;
 
       const report = await askGeminiRaw(prompt);
-      const critical = countSeverity(report, "CRITICAL");
-      const high = countSeverity(report, "HIGH");
-      const medium = countSeverity(report, "MEDIUM");
-      const low = countSeverity(report, "LOW");
-      const total = critical + high + medium + low;
-      const score = extractScore(report);
+      const { critical, high, medium, low, total, score } = parseSeverityCounts(report);
 
       return NextResponse.json({
         report,
@@ -216,12 +255,7 @@ After listing all vulnerabilities, add:
 - Top priority fix: [most critical issue]`;
 
     const report = await askGeminiRaw(prompt);
-    const critical = countSeverity(report, "CRITICAL");
-    const high = countSeverity(report, "HIGH");
-    const medium = countSeverity(report, "MEDIUM");
-    const low = countSeverity(report, "LOW");
-    const total = critical + high + medium + low;
-    const score = extractScore(report);
+    const { critical, high, medium, low, total, score } = parseSeverityCounts(report);
 
     return NextResponse.json({
       report,

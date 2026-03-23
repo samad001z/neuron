@@ -60,20 +60,6 @@ function toFileSummariesContext(rows: ChunkRow[]): string {
     .join("\n");
 }
 
-function countWords(text: string): number {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return 0;
-  }
-
-  return trimmed.split(/\s+/).length;
-}
-
-function countSections(text: string): number {
-  const matches = text.match(/^##\s+/gm);
-  return matches ? matches.length : 0;
-}
-
 export async function POST(request: Request) {
   try {
     const supabase = createRouteSupabaseClient();
@@ -197,11 +183,13 @@ How to add a new feature, following the existing patterns.
 Make everything specific to THIS codebase - no generic placeholders.`;
 
     const wiki = await askGeminiRaw(prompt);
+    const wordCount = wiki.split(/\s+/).filter(Boolean).length;
+    const sectionCount = (wiki.match(/^#{1,3} /gm) || []).length;
 
     return NextResponse.json({
       wiki,
-      wordCount: countWords(wiki),
-      sectionCount: countSections(wiki),
+      wordCount,
+      sectionCount,
     } satisfies WikiSuccessResponse);
   } catch (error: unknown) {
     logServerError("/api/wiki", error);

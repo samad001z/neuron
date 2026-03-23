@@ -15,6 +15,7 @@ type PrMetadataResponse = {
   changedFiles: number;
   additions: number;
   deletions: number;
+  risk: "LOW" | "MEDIUM" | "HIGH";
 };
 
 type PrSuccessResponse = {
@@ -118,6 +119,20 @@ function toDiffContext(files: GitHubPrFile[]): string {
       return `FILE: ${file.filename} (${file.status}) +${file.additions} -${file.deletions}\n${patch}`;
     })
     .join("\n\n");
+}
+
+function extractRiskLevel(analysis: string): "LOW" | "MEDIUM" | "HIGH" {
+  const upper = analysis.toUpperCase();
+
+  if (upper.includes("RISK: HIGH") || upper.includes("HIGH RISK") || upper.includes("RISK**\nHIGH")) {
+    return "HIGH";
+  }
+
+  if (upper.includes("RISK: MEDIUM") || upper.includes("MEDIUM RISK")) {
+    return "MEDIUM";
+  }
+
+  return "LOW";
 }
 
 export async function POST(request: Request) {
@@ -269,6 +284,7 @@ The 3-5 most important files a reviewer should focus on, with reasons.
         changedFiles: prData.changed_files ?? limitedFiles.length,
         additions: prData.additions ?? 0,
         deletions: prData.deletions ?? 0,
+        risk: extractRiskLevel(analysis),
       },
     } satisfies PrSuccessResponse);
   } catch (error: unknown) {

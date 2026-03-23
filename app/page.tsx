@@ -1,8 +1,19 @@
 "use client";
 
-import { type ComponentPropsWithoutRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+  Fragment,
+  isValidElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { supabase } from "@/lib/supabase";
@@ -218,6 +229,460 @@ function extractRiskFromAnalysis(analysis: string): "LOW" | "MEDIUM" | "HIGH" | 
   return undefined;
 }
 
+function createHeadingId(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^\w-]/g, "");
+}
+
+function nodeToPlainText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map((child) => nodeToPlainText(child)).join("");
+  }
+
+  if (isValidElement(node)) {
+    return nodeToPlainText((node.props as { children?: ReactNode }).children);
+  }
+
+  return "";
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function MermaidDiagram({ code }: { code: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const renderDiagram = async (): Promise<void> => {
+      try {
+        const { default: mermaid } = await import("mermaid");
+
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: "dark",
+          themeVariables: {
+            darkMode: true,
+            background: "#111111",
+            primaryColor: "#1a1a1a",
+            primaryTextColor: "#ededed",
+            primaryBorderColor: "rgba(255,255,255,0.1)",
+            lineColor: "rgba(255,255,255,0.3)",
+            secondaryColor: "#1a1a1a",
+            tertiaryColor: "#222222",
+            fontSize: "12px",
+            fontFamily: "JetBrains Mono, monospace",
+          },
+        });
+
+        const id = `mermaid-${Math.random().toString(36).slice(2)}`;
+        const { svg } = await mermaid.render(id, code);
+
+        if (!ref.current || cancelled) {
+          return;
+        }
+
+        ref.current.innerHTML = svg;
+
+        const svgEl = ref.current.querySelector("svg");
+        if (svgEl) {
+          svgEl.style.width = "100%";
+          svgEl.style.maxWidth = "100%";
+          svgEl.style.height = "auto";
+        }
+      } catch (error) {
+        console.warn("Mermaid render failed:", error);
+
+        if (!ref.current || cancelled) {
+          return;
+        }
+
+        ref.current.innerHTML = `<pre style="font-family:monospace;font-size:11px;color:var(--text-tertiary);overflow-x:auto">${escapeHtml(code)}</pre>`;
+      }
+    };
+
+    void renderDiagram();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [code]);
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        margin: "20px 0",
+        padding: "20px",
+        background: "var(--bg-surface)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "6px",
+        overflowX: "auto",
+        minHeight: "60px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <span
+        style={{
+          fontSize: "11px",
+          color: "var(--text-tertiary)",
+          fontFamily: "var(--font-mono)",
+        }}
+      >
+        Rendering diagram...
+      </span>
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  const words = ["Analyzing", "Reading files", "Understanding", "Generating"];
+  const [wordIndex, setWordIndex] = useState(0);
+  const [dots, setDots] = useState("");
+
+  useEffect(() => {
+    const wordTimer = window.setInterval(() => {
+      setWordIndex((index) => (index + 1) % words.length);
+    }, 2000);
+
+    const dotTimer = window.setInterval(() => {
+      setDots((current) => (current.length >= 3 ? "" : `${current}.`));
+    }, 400);
+
+    return () => {
+      window.clearInterval(wordTimer);
+      window.clearInterval(dotTimer);
+    };
+  }, [words.length]);
+
+  return (
+    <div style={{ marginBottom: "32px" }}>
+      <div
+        style={{
+          fontSize: "11px",
+          fontFamily: "var(--font-mono)",
+          color: "var(--text-primary)",
+          marginBottom: "10px",
+          fontWeight: 500,
+        }}
+      >
+        neuron
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-end",
+            gap: "2px",
+            height: "16px",
+            flexShrink: 0,
+          }}
+        >
+          {[0.6, 1, 0.7, 0.9, 0.5, 0.8, 0.6].map((height, index) => (
+            <motion.div
+              key={index}
+              style={{
+                width: "2px",
+                background: "var(--text-primary)",
+                borderRadius: "1px",
+                originY: 1,
+              }}
+              animate={{
+                scaleY: [height, 1, height * 0.4, 0.9, height],
+                opacity: [0.4, 1, 0.5, 0.8, 0.4],
+              }}
+              transition={{
+                duration: 1.2,
+                repeat: Infinity,
+                delay: index * 0.08,
+                ease: "easeInOut",
+              }}
+              initial={{ height: "4px" }}
+            />
+          ))}
+        </div>
+
+        <AnimatePresence mode="wait">
+          <motion.span
+            key={wordIndex}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.2 }}
+            style={{
+              fontSize: "13px",
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {words[wordIndex]}
+            {dots}
+          </motion.span>
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+function IngestionProgress({
+  stage,
+  message,
+  current,
+  total,
+}: {
+  stage: string;
+  message: string;
+  current?: number;
+  total?: number;
+}) {
+  const stages = [
+    { id: "starting", label: "Connecting" },
+    { id: "tree", label: "Reading structure" },
+    { id: "fetching", label: "Fetching files" },
+    { id: "graph", label: "Building graph" },
+    { id: "processing", label: "Processing" },
+    { id: "saving", label: "Saving" },
+    { id: "complete", label: "Complete" },
+  ];
+
+  const currentStageIndex = Math.max(0, stages.findIndex((entry) => entry.id === stage));
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.2 }}
+      style={{
+        borderBottom: "1px solid var(--border-subtle)",
+        background: "var(--bg-surface)",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        title={message}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "16px",
+          padding: "10px 16px",
+          overflowX: "auto",
+        }}
+      >
+        <div style={{ position: "relative", width: "16px", height: "16px", flexShrink: 0 }}>
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            style={{
+              width: "16px",
+              height: "16px",
+              border: "1.5px solid var(--border-subtle)",
+              borderTopColor: "var(--text-primary)",
+              borderRadius: "50%",
+            }}
+          />
+        </div>
+
+        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+          {stages.slice(0, -1).map((entry, index) => (
+            <Fragment key={entry.id}>
+              <motion.div
+                animate={{
+                  opacity: index <= currentStageIndex ? 1 : 0.3,
+                  scale: index === currentStageIndex ? 1 : 0.95,
+                }}
+                style={{
+                  fontSize: "10px",
+                  fontFamily: "var(--font-mono)",
+                  color:
+                    index < currentStageIndex
+                      ? "var(--text-tertiary)"
+                      : index === currentStageIndex
+                      ? "var(--text-primary)"
+                      : "var(--text-tertiary)",
+                  padding: "2px 8px",
+                  borderRadius: "3px",
+                  background: index === currentStageIndex ? "var(--bg-elevated)" : "transparent",
+                  border: index === currentStageIndex ? "1px solid var(--border-soft)" : "1px solid transparent",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {index < currentStageIndex ? "✓ " : ""}
+                {entry.label}
+              </motion.div>
+              {index < stages.length - 2 && (
+                <span style={{ color: "var(--text-tertiary)", fontSize: "10px" }}>
+                  ›
+                </span>
+              )}
+            </Fragment>
+          ))}
+        </div>
+
+        {stage === "fetching" && (current ?? 0) > 0 && (
+          <motion.span
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            style={{
+              marginLeft: "auto",
+              fontSize: "11px",
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-tertiary)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {current}/{total} files
+          </motion.span>
+        )}
+      </div>
+
+      <div style={{ height: "1px", background: "var(--border-subtle)" }}>
+        <motion.div
+          initial={{ scaleX: 0, originX: 0 }}
+          animate={{
+            scaleX: stage === "complete" ? 1 : currentStageIndex / (stages.length - 1),
+          }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          style={{
+            height: "100%",
+            background: "var(--text-primary)",
+            transformOrigin: "left",
+          }}
+        />
+      </div>
+    </motion.div>
+  );
+}
+
+function AnimatedCounter({ value, color }: { value: number; color: string }) {
+  const [display, setDisplay] = useState(0);
+
+  useEffect(() => {
+    if (value === 0) {
+      setDisplay(0);
+      return;
+    }
+
+    let start = 0;
+    const end = value;
+    const duration = 800;
+    const stepTime = Math.max(16, duration / end);
+
+    const timer = window.setInterval(() => {
+      start += 1;
+      setDisplay(start);
+
+      if (start >= end) {
+        window.clearInterval(timer);
+      }
+    }, stepTime);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [value]);
+
+  return (
+    <motion.p
+      initial={{ opacity: 0, scale: 0.5 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ type: "spring", stiffness: 300, damping: 20 }}
+      style={{
+        fontSize: "32px",
+        fontWeight: 600,
+        color: value > 0 ? color : "var(--text-tertiary)",
+        fontFamily: "var(--font-mono)",
+        lineHeight: 1,
+      }}
+    >
+      {display}
+    </motion.p>
+  );
+}
+
+function ShimmerButton({
+  isLoading,
+  onClick,
+  children,
+  loadingText,
+  disabled,
+}: {
+  isLoading: boolean;
+  onClick: () => void;
+  children: ReactNode;
+  loadingText: string;
+  disabled?: boolean;
+}) {
+  const isDisabled = isLoading || Boolean(disabled);
+
+  return (
+    <motion.button
+      type="button"
+      onClick={onClick}
+      disabled={isDisabled}
+      whileHover={!isDisabled ? { opacity: 0.88 } : undefined}
+      whileTap={!isDisabled ? { scale: 0.98 } : undefined}
+      style={{
+        height: "40px",
+        padding: "0 24px",
+        background: isLoading ? "var(--bg-elevated)" : "var(--text-primary)",
+        color: isLoading ? "var(--text-tertiary)" : "var(--bg-app)",
+        border: isLoading ? "1px solid var(--border-subtle)" : "none",
+        borderRadius: "var(--radius-md)",
+        fontSize: "13px",
+        fontWeight: 500,
+        fontFamily: "var(--font-sans)",
+        cursor: isDisabled ? "not-allowed" : "pointer",
+        position: "relative",
+        overflow: "hidden",
+        opacity: isDisabled && !isLoading ? 0.45 : 1,
+      }}
+    >
+      {isLoading ? (
+        <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <motion.span
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            style={{
+              display: "inline-block",
+              width: "12px",
+              height: "12px",
+              border: "1.5px solid var(--border-soft)",
+              borderTopColor: "var(--text-secondary)",
+              borderRadius: "50%",
+            }}
+          />
+          {loadingText}
+        </span>
+      ) : (
+        children
+      )}
+    </motion.button>
+  );
+}
+
 export default function NeuronPage() {
   const router = useRouter();
   const [repoUrl, setRepoUrl] = useState<string>("");
@@ -307,6 +772,26 @@ export default function NeuronPage() {
 
     return files.filter((item) => item.path.toLowerCase().includes(query));
   }, [fileFilter, files]);
+
+  const wikiTocItems = useMemo(() => {
+    if (!wikiContent) {
+      return [];
+    }
+
+    return wikiContent
+      .split("\n")
+      .filter((line) => line.startsWith("## ") || line.startsWith("# "))
+      .map((line) => {
+        const text = line.replace(/^#{1,3} /, "").trim();
+
+        return {
+          text,
+          level: line.startsWith("## ") ? 2 : 1,
+          id: createHeadingId(text),
+        };
+      })
+      .filter((item) => item.text.length > 0);
+  }, [wikiContent]);
 
   useEffect(() => {
     if (messageContainerRef.current) {
@@ -1144,19 +1629,68 @@ export default function NeuronPage() {
         .attr("stroke-width", (d) => (d.id === maxDegreeNodeId ? 2 : 1))
         .style("cursor", "pointer")
         .on("mouseenter", (event, d) => {
-          d3.select<SVGCircleElement, SimNode>(event.currentTarget).attr("stroke-width", 2);
+          const hovered = d3.select<SVGCircleElement, SimNode>(event.currentTarget);
+          const hoverRadius = (degree.get(d.id) ?? 0) > 5 ? 18 : 10;
+
+          hovered
+            .interrupt()
+            .transition()
+            .duration(150)
+            .attr("r", hoverRadius)
+            .attr("stroke-width", 2.5);
+
+          if (typeof d.x === "number" && typeof d.y === "number") {
+            graphGroup
+              .append("circle")
+              .attr("class", "ripple")
+              .attr("cx", d.x)
+              .attr("cy", d.y)
+              .attr("r", (degree.get(d.id) ?? 0) > 5 ? 14 : 8)
+              .attr("fill", "none")
+              .attr("stroke", "rgba(255,255,255,0.4)")
+              .attr("stroke-width", 1)
+              .attr("stroke-opacity", 1)
+              .transition()
+              .duration(600)
+              .attr("r", (degree.get(d.id) ?? 0) > 5 ? 30 : 20)
+              .attr("stroke-width", 0)
+              .attr("stroke-opacity", 0)
+              .remove();
+          }
+
+          labels
+            .filter((x) => x.id === d.id)
+            .interrupt()
+            .style("display", "block")
+            .transition()
+            .duration(150)
+            .style("opacity", 1);
+
           if ((degree.get(d.id) ?? 0) <= 4 && d.id !== maxDegreeNodeId) {
             labels.filter((x) => x.id === d.id).style("display", "block");
           }
         })
         .on("mouseleave", (event, d) => {
-          d3.select<SVGCircleElement, SimNode>(event.currentTarget).attr(
-            "stroke-width",
-            d.id === maxDegreeNodeId ? 2 : 1,
-          );
-          if ((degree.get(d.id) ?? 0) <= 4 && d.id !== maxDegreeNodeId) {
-            labels.filter((x) => x.id === d.id).style("display", "none");
-          }
+          const baseRadius = getNodeRadius(d.id);
+
+          d3.select<SVGCircleElement, SimNode>(event.currentTarget)
+            .interrupt()
+            .transition()
+            .duration(200)
+            .attr("r", baseRadius)
+            .attr("stroke-width", d.id === maxDegreeNodeId ? 2 : 1.5);
+
+          labels
+            .filter((x) => x.id === d.id)
+            .interrupt()
+            .transition()
+            .duration(150)
+            .style("opacity", (degree.get(d.id) ?? 0) > 4 || d.id === maxDegreeNodeId ? 1 : 0)
+            .on("end", function () {
+              if ((degree.get(d.id) ?? 0) <= 4 && d.id !== maxDegreeNodeId) {
+                d3.select(this).style("display", "none");
+              }
+            });
         })
         .on("click", (_, d) => {
           setActiveTab("chat");
@@ -1261,7 +1795,12 @@ export default function NeuronPage() {
       `}</style>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-[260px] shrink-0 flex-col border-r border-zinc-800/80 bg-[#0d1118]/95 backdrop-blur-xl animate-in slide-in-from-left duration-300">
+        <motion.aside
+          initial={{ opacity: 0, x: -16 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+          className="flex w-[260px] shrink-0 flex-col border-r border-zinc-800/80 bg-[#0d1118]/95 backdrop-blur-xl animate-in slide-in-from-left duration-300"
+        >
           <div className="p-3">
             <button
               type="button"
@@ -1290,13 +1829,23 @@ export default function NeuronPage() {
                 <div key={group.label} className="mb-2">
                   <p className="px-3 py-2 text-[10px] uppercase tracking-widest text-zinc-600">{group.label}</p>
                   <div className="space-y-1">
-                    {group.sessions.map((item) => {
+                    <AnimatePresence initial={false}>
+                    {group.sessions.map((item, index) => {
                       const active = sessionId === item.id;
 
                       return (
-                        <button
+                        <motion.button
                           key={item.id}
                           type="button"
+                          initial={{ opacity: 0, x: -8 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{
+                            duration: 0.2,
+                            delay: index * 0.03,
+                            ease: "easeOut",
+                          }}
+                          whileHover={{ backgroundColor: "rgba(255,255,255,0.04)" }}
+                          whileTap={{ scale: 0.99 }}
                           onClick={() => openHistorySession(item.id)}
                           className={`group w-full rounded-md px-3 py-2.5 text-left transition ${
                             active
@@ -1330,9 +1879,10 @@ export default function NeuronPage() {
                               ×
                             </span>
                           </div>
-                        </button>
+                        </motion.button>
                       );
                     })}
+                    </AnimatePresence>
                   </div>
                 </div>
               ))
@@ -1377,12 +1927,23 @@ export default function NeuronPage() {
               </button>
             </div>
           </div>
-        </aside>
+        </motion.aside>
 
         <section className="flex min-w-0 flex-1 flex-col bg-[#090b10] animate-in fade-in duration-500">
-          {(sessionId || isIngesting) && (
-          <div className="sticky top-0 z-10">
-            <header
+          <AnimatePresence initial={false}>
+            {(sessionId || isIngesting) ? (
+              <motion.div
+                key="top-navbar"
+                className="sticky top-0 z-10"
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.25, ease: "easeOut" }}
+              >
+            <motion.header
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
               className="flex min-w-0 items-center gap-4 px-4"
               style={{
                 height: "48px",
@@ -1451,24 +2012,21 @@ export default function NeuronPage() {
                   )}
                 </div>
 
-                <button
+                <motion.button
                   type="button"
                   onClick={() => {
                     void handleIngest();
                   }}
                   disabled={!repoUrl.trim() || isIngesting}
+                  whileHover={!repoUrl.trim() || isIngesting ? undefined : { opacity: 0.88 }}
+                  whileTap={!repoUrl.trim() || isIngesting ? undefined : { scale: 0.97 }}
+                  transition={{ duration: 0.1 }}
                   className="h-8 flex-shrink-0 rounded-[var(--radius-md)] px-[14px] text-[12px] font-medium transition-opacity duration-150 disabled:cursor-not-allowed disabled:opacity-40"
                   style={{
                     background: "var(--text-primary)",
                     color: "var(--bg-app)",
                     border: "none",
                     fontFamily: "var(--font-sans)",
-                  }}
-                  onMouseEnter={(event) => {
-                    event.currentTarget.style.opacity = "0.85";
-                  }}
-                  onMouseLeave={(event) => {
-                    event.currentTarget.style.opacity = "1";
                   }}
                 >
                   {isIngesting ? (
@@ -1486,56 +2044,20 @@ export default function NeuronPage() {
                   ) : (
                     "Analyze"
                   )}
-                </button>
+                </motion.button>
               </div>
-            </header>
+            </motion.header>
 
-            {isIngesting && (
-              <div
-                style={{
-                  height: "32px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "0 16px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  backgroundColor: "var(--bg-surface)",
-                }}
-              >
-                <span
-                  style={{
-                    width: "6px",
-                    height: "6px",
-                    borderRadius: "50%",
-                    backgroundColor: "#ffffff",
-                    animation: "pulse 1.5s ease-in-out infinite",
-                  }}
+            <AnimatePresence>
+              {isIngesting && (
+                <IngestionProgress
+                  stage={ingestProgress.stage}
+                  message={ingestProgress.message}
+                  current={ingestProgress.current}
+                  total={ingestProgress.total}
                 />
-
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "11px",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {ingestProgress.message || "Analyzing..."}
-                </span>
-
-                {(ingestProgress.current ?? 0) > 0 && (
-                  <span
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "11px",
-                      color: "var(--text-tertiary)",
-                      marginLeft: "auto",
-                    }}
-                  >
-                    {ingestProgress.current}/{ingestProgress.total} files
-                  </span>
-                )}
-              </div>
-            )}
+              )}
+            </AnimatePresence>
 
             <div
               style={{
@@ -1558,10 +2080,13 @@ export default function NeuronPage() {
                 const isActive = activeTab === tabValue;
 
                 return (
-                  <button
+                  <motion.button
                     key={tab}
                     type="button"
                     onClick={() => setActiveTab(tabValue)}
+                    whileHover={{ color: "var(--text-primary)" }}
+                    whileTap={{ scale: 0.97 }}
+                    transition={{ duration: 0.1 }}
                     style={{
                       height: "40px",
                       padding: "0 12px",
@@ -1578,14 +2103,20 @@ export default function NeuronPage() {
                     }}
                   >
                     {tab}
-                  </button>
+                  </motion.button>
                 );
               })}
             </div>
-          </div>
-          )}
+          </motion.div>
+            ) : null}
+          </AnimatePresence>
 
-          <div className={`min-h-0 flex-1 px-6 py-4 transition-opacity duration-200 ${isSessionSwitching ? "opacity-50" : "opacity-100"}`}>
+          <motion.main
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.3, delay: 0.1 }}
+            className={`min-h-0 flex-1 px-6 py-4 transition-opacity duration-200 ${isSessionSwitching ? "opacity-50" : "opacity-100"}`}
+          >
             {ingestError && (
               <div className="mb-3 rounded-[6px] border border-red-500/30 bg-red-950/30 px-3 py-2 text-[12px] text-red-200">
                 {ingestError}
@@ -1612,16 +2143,19 @@ export default function NeuronPage() {
                     className="min-w-0 flex-1 bg-transparent font-mono text-[12px] text-zinc-300 placeholder-zinc-700 outline-none"
                   />
 
-                  <button
+                  <motion.button
                     type="button"
                     onClick={() => {
                       void handleIngest();
                     }}
                     disabled={!repoUrl.trim() || isIngesting}
+                    whileHover={!repoUrl.trim() || isIngesting ? undefined : { opacity: 0.88 }}
+                    whileTap={!repoUrl.trim() || isIngesting ? undefined : { scale: 0.97 }}
+                    transition={{ duration: 0.1 }}
                     className="h-7 rounded-md bg-sky-600 px-3 text-[12px] font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Analyze
-                  </button>
+                  </motion.button>
                 </div>
 
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
@@ -1642,7 +2176,16 @@ export default function NeuronPage() {
                 </div>
               </div>
             ) : (
-            activeTab === "chat" ? (
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={activeTab}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}
+                >
+            {activeTab === "chat" ? (
               <div className="flex h-full flex-col overflow-hidden rounded-[10px] border border-zinc-700/60 bg-[#111722]/95 shadow-[0_20px_60px_rgba(0,0,0,0.35)]" style={{ animation: "tab-in 180ms ease-out" }}>
                 {sessionId && (
                   <div className="border-b border-zinc-800/60 px-8 py-3">
@@ -1679,94 +2222,104 @@ export default function NeuronPage() {
                     </div>
                   ) : (
                     <div style={{ maxWidth: "680px", margin: "0 auto", padding: "24px 32px" }}>
-                      {messages.map((message, index) => {
-                        const isUser = message.role === "user";
-                        const isThinking = message.id.startsWith("local-thinking-");
-                        const isError = message.text.startsWith("Error:") || message.text.startsWith("I encountered");
+                      <AnimatePresence mode="popLayout">
+                        {messages.map((message, index) => {
+                          const isUser = message.role === "user";
+                          const isThinking = message.id.startsWith("local-thinking-");
+                          const isError = message.text.startsWith("Error:") || message.text.startsWith("I encountered");
 
-                        return (
-                          <div key={message.id}>
-                            <div
-                              style={{
-                                fontSize: "11px",
-                                fontFamily: "var(--font-mono)",
-                                color: isUser ? "var(--text-tertiary)" : "var(--text-primary)",
-                                marginBottom: "6px",
-                                fontWeight: 500,
+                          return (
+                            <motion.div
+                              key={message.id}
+                              initial={{ opacity: 0, y: 12, filter: "blur(4px)" }}
+                              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                              exit={{ opacity: 0, y: -4 }}
+                              transition={{
+                                duration: 0.35,
+                                ease: [0.16, 1, 0.3, 1],
                               }}
+                              style={{ marginBottom: "32px" }}
                             >
-                              {isUser ? "you" : "neuron"}
-                            </div>
-
-                            <div
-                              style={{
-                                fontSize: "14px",
-                                lineHeight: 1.7,
-                                color: isUser ? "var(--text-secondary)" : "var(--text-primary)",
-                                fontFamily: "var(--font-sans)",
-                              }}
-                            >
-                              {isUser ? (
-                                <p className="whitespace-pre-wrap" style={{ borderLeft: "2px solid var(--border-soft)", paddingLeft: "10px", fontFamily: "var(--font-mono)" }}>
-                                  {message.text}
-                                </p>
-                              ) : isThinking ? (
-                                <div className="flex items-center gap-2" style={{ color: "var(--text-secondary)" }}>
-                                  <span
+                              {!isThinking && (
+                                <motion.div
+                                  initial={{ opacity: 0 }}
+                                  animate={{ opacity: 1 }}
+                                  transition={{ delay: 0.1 }}
+                                  style={{ marginBottom: "8px" }}
+                                >
+                                  <div
                                     style={{
-                                      width: "6px",
-                                      height: "6px",
-                                      borderRadius: "50%",
-                                      backgroundColor: "var(--text-primary)",
-                                      animation: "pulse 1.2s ease-in-out infinite",
-                                    }}
-                                  />
-                                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px" }}>thinking...</span>
-                                </div>
-                              ) : isError ? (
-                                <p className="whitespace-pre-wrap" style={{ color: "var(--error)" }}>{message.text}</p>
-                              ) : (
-                                <div>
-                                  <ReactMarkdown
-                                    remarkPlugins={[remarkGfm]}
-                                    components={{
-                                      p: ({ children }) => <p className="mb-3 text-[14px] leading-[1.7] last:mb-0">{children}</p>,
-                                      strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                                      ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
-                                      li: ({ children }) => <li className="text-[14px] leading-[1.7]">{children}</li>,
-                                      code: ({ inline, children }: MarkdownCodeProps) =>
-                                        inline ? (
-                                          <code className="rounded-[4px] border px-1.5 py-0.5 font-mono text-[12px]" style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-elevated)" }}>
-                                            {children}
-                                          </code>
-                                        ) : (
-                                          <pre className="my-3 overflow-x-auto rounded-[6px] border p-3" style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-elevated)" }}>
-                                            <code className="font-mono text-[12px] leading-relaxed">{children}</code>
-                                          </pre>
-                                        ),
-                                      h1: ({ children }) => <h1 className="mb-2 mt-4 text-base font-semibold">{children}</h1>,
-                                      h2: ({ children }) => <h2 className="mb-2 mt-3 text-[14px] font-semibold">{children}</h2>,
-                                      h3: ({ children }) => <h3 className="mb-1 mt-3 text-[13px] font-medium">{children}</h3>,
-                                      blockquote: ({ children }) => (
-                                        <blockquote className="my-2 border-l-2 pl-3 text-[13px] italic" style={{ borderColor: "var(--border-soft)", color: "var(--text-secondary)" }}>
-                                          {children}
-                                        </blockquote>
-                                      ),
-                                      hr: () => <hr className="my-4" style={{ borderColor: "var(--border-subtle)" }} />,
-                                      a: ({ href, children }) => (
-                                        <a href={href} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2" style={{ color: "var(--text-primary)" }}>
-                                          {children}
-                                        </a>
-                                      ),
+                                      fontSize: "11px",
+                                      fontFamily: "var(--font-mono)",
+                                      color: isUser ? "var(--text-tertiary)" : "var(--text-primary)",
+                                      fontWeight: 500,
                                     }}
                                   >
-                                    {message.text}
-                                  </ReactMarkdown>
+                                    {isUser ? "you" : "neuron"}
+                                  </div>
+                                </motion.div>
+                              )}
+
+                              {isThinking ? (
+                                <ThinkingIndicator />
+                              ) : (
+                                <div
+                                  style={{
+                                    fontSize: "14px",
+                                    lineHeight: 1.7,
+                                    color: isUser ? "var(--text-secondary)" : "var(--text-primary)",
+                                    fontFamily: "var(--font-sans)",
+                                  }}
+                                >
+                                  {isUser ? (
+                                    <p className="whitespace-pre-wrap" style={{ borderLeft: "2px solid var(--border-soft)", paddingLeft: "10px", fontFamily: "var(--font-mono)" }}>
+                                      {message.text}
+                                    </p>
+                                  ) : isError ? (
+                                    <p className="whitespace-pre-wrap" style={{ color: "var(--error)" }}>{message.text}</p>
+                                  ) : (
+                                    <div>
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        components={{
+                                          p: ({ children }) => <p className="mb-3 text-[14px] leading-[1.7] last:mb-0">{children}</p>,
+                                          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                                          ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
+                                          li: ({ children }) => <li className="text-[14px] leading-[1.7]">{children}</li>,
+                                          code: ({ inline, children }: MarkdownCodeProps) =>
+                                            inline ? (
+                                              <code className="rounded-[4px] border px-1.5 py-0.5 font-mono text-[12px]" style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-elevated)" }}>
+                                                {children}
+                                              </code>
+                                            ) : (
+                                              <pre className="my-3 overflow-x-auto rounded-[6px] border p-3" style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-elevated)" }}>
+                                                <code className="font-mono text-[12px] leading-relaxed">{children}</code>
+                                              </pre>
+                                            ),
+                                          h1: ({ children }) => <h1 className="mb-2 mt-4 text-base font-semibold">{children}</h1>,
+                                          h2: ({ children }) => <h2 className="mb-2 mt-3 text-[14px] font-semibold">{children}</h2>,
+                                          h3: ({ children }) => <h3 className="mb-1 mt-3 text-[13px] font-medium">{children}</h3>,
+                                          blockquote: ({ children }) => (
+                                            <blockquote className="my-2 border-l-2 pl-3 text-[13px] italic" style={{ borderColor: "var(--border-soft)", color: "var(--text-secondary)" }}>
+                                              {children}
+                                            </blockquote>
+                                          ),
+                                          hr: () => <hr className="my-4" style={{ borderColor: "var(--border-subtle)" }} />,
+                                          a: ({ href, children }) => (
+                                            <a href={href} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2" style={{ color: "var(--text-primary)" }}>
+                                              {children}
+                                            </a>
+                                          ),
+                                        }}
+                                      >
+                                        {message.text}
+                                      </ReactMarkdown>
+                                    </div>
+                                  )}
                                 </div>
                               )}
-                            </div>
 
-                            {!isUser && index === lastAssistantIndex && (
+                            {!isUser && !isThinking && index === lastAssistantIndex && (
                               <div className="mt-6 flex flex-wrap gap-2">
                                 {buildFollowUps().slice(0, 4).map((chip) => (
                                   <button
@@ -1792,9 +2345,10 @@ export default function NeuronPage() {
                             {index < messages.length - 1 && (
                               <div style={{ height: "1px", background: "var(--border-subtle)", margin: "20px 0" }} />
                             )}
-                          </div>
-                        );
-                      })}
+                            </motion.div>
+                          );
+                        })}
+                      </AnimatePresence>
 
                     </div>
                   )}
@@ -1855,12 +2409,15 @@ export default function NeuronPage() {
                     />
 
                     {chatInput.trim().length > 0 && (
-                      <button
+                      <motion.button
                         type="button"
                         onClick={() => {
                           void sendMessage(chatInput);
                         }}
                         disabled={!isIngested || isChatLoading || !sessionId}
+                        whileHover={!isIngested || isChatLoading || !sessionId ? undefined : { scale: 1.05 }}
+                        whileTap={!isIngested || isChatLoading || !sessionId ? undefined : { scale: 0.92 }}
+                        transition={{ duration: 0.1 }}
                         style={{
                           width: "24px",
                           height: "24px",
@@ -1878,7 +2435,7 @@ export default function NeuronPage() {
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--bg-app)" strokeWidth="2.5">
                           <path d="M5 12h14M12 5l7 7-7 7" />
                         </svg>
-                      </button>
+                      </motion.button>
                     )}
                   </div>
 
@@ -1954,28 +2511,16 @@ export default function NeuronPage() {
                       >
                         Checks for XSS · SQL injection · hardcoded secrets · auth issues · prototype pollution
                       </p>
-                      <button
-                        type="button"
+                      <ShimmerButton
+                        isLoading={isAuditing}
+                        loadingText="Scanning codebase..."
+                        disabled={!isIngested}
                         onClick={() => {
                           void handleSecurityAudit();
                         }}
-                        disabled={!isIngested || isAuditing}
-                        style={{
-                          height: "40px",
-                          padding: "0 24px",
-                          background: "var(--text-primary)",
-                          color: "var(--bg-app)",
-                          border: "none",
-                          borderRadius: "var(--radius-md)",
-                          fontSize: "13px",
-                          fontWeight: 500,
-                          fontFamily: "var(--font-sans)",
-                          cursor: "pointer",
-                          opacity: !isIngested || isAuditing ? 0.45 : 1,
-                        }}
                       >
-                        {isAuditing ? "Scanning codebase..." : "Run Security Audit"}
-                      </button>
+                        Run Security Audit
+                      </ShimmerButton>
                     </div>
                   )}
 
@@ -1986,9 +2531,12 @@ export default function NeuronPage() {
                         { label: "High", count: securitySummary.high, color: "#f59e0b" },
                         { label: "Medium", count: securitySummary.medium, color: "#eab308" },
                         { label: "Low", count: securitySummary.low, color: "#22c55e" },
-                      ].map((item) => (
-                        <div
+                      ].map((item, index) => (
+                        <motion.div
                           key={item.label}
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: index * 0.1, duration: 0.3 }}
                           style={{
                             padding: "16px",
                             textAlign: "center",
@@ -1997,16 +2545,7 @@ export default function NeuronPage() {
                             borderRadius: "var(--radius-md)",
                           }}
                         >
-                          <p
-                            style={{
-                              fontSize: "24px",
-                              fontWeight: 600,
-                              color: item.count > 0 ? item.color : "var(--text-tertiary)",
-                              fontFamily: "var(--font-mono)",
-                            }}
-                          >
-                            {item.count}
-                          </p>
+                          <AnimatedCounter value={item.count} color={item.color} />
                           <p
                             style={{
                               fontSize: "10px",
@@ -2017,7 +2556,7 @@ export default function NeuronPage() {
                           >
                             {item.label}
                           </p>
-                        </div>
+                        </motion.div>
                       ))}
                     </div>
                   )}
@@ -2211,7 +2750,7 @@ export default function NeuronPage() {
               </div>
             ) : (
               <div className="h-full overflow-y-auto" style={{ animation: "tab-in 180ms ease-out" }}>
-                <div style={{ padding: "24px 32px", maxWidth: "740px", margin: "0 auto" }}>
+                <div style={{ padding: "24px 32px", maxWidth: "1120px", margin: "0 auto", width: "100%" }}>
                   {!wikiContent && (
                     <div style={{ textAlign: "center", padding: "60px 0" }}>
                       <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "8px" }}>
@@ -2227,27 +2766,16 @@ export default function NeuronPage() {
                       >
                         Architecture · File reference · API docs · Getting started · Core concepts
                       </p>
-                      <button
-                        type="button"
+                      <ShimmerButton
+                        isLoading={isGeneratingWiki}
+                        loadingText="Generating wiki..."
+                        disabled={!isIngested}
                         onClick={() => {
                           void handleGenerateWiki();
                         }}
-                        disabled={!isIngested || isGeneratingWiki}
-                        style={{
-                          height: "40px",
-                          padding: "0 24px",
-                          background: "var(--text-primary)",
-                          color: "var(--bg-app)",
-                          border: "none",
-                          borderRadius: "var(--radius-md)",
-                          fontSize: "13px",
-                          fontWeight: 500,
-                          cursor: "pointer",
-                          opacity: !isIngested || isGeneratingWiki ? 0.45 : 1,
-                        }}
                       >
-                        {isGeneratingWiki ? "Generating wiki..." : "Generate Wiki"}
-                      </button>
+                        Generate Wiki
+                      </ShimmerButton>
                     </div>
                   )}
 
@@ -2255,101 +2783,527 @@ export default function NeuronPage() {
                     <div
                       style={{
                         display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        marginBottom: "24px",
-                        paddingBottom: "16px",
-                        borderBottom: "1px solid var(--border-subtle)",
+                        gap: "24px",
+                        alignItems: "flex-start",
                       }}
                     >
-                      <div style={{ display: "flex", gap: "16px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
-                          ~{wikiMeta?.wordCount?.toLocaleString()} words
-                        </span>
-                        <span style={{ fontSize: "11px", color: "var(--text-tertiary)", fontFamily: "var(--font-mono)" }}>
-                          {wikiMeta?.sectionCount} sections
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", gap: "8px" }}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void navigator.clipboard.writeText(wikiContent);
-                          }}
+                      <div style={{ flex: "1 1 70%", minWidth: 0 }}>
+                        <div
                           style={{
-                            height: "30px",
-                            padding: "0 12px",
-                            background: "transparent",
-                            border: "1px solid var(--border-subtle)",
-                            borderRadius: "var(--radius-sm)",
-                            fontSize: "11px",
-                            color: "var(--text-tertiary)",
-                            fontFamily: "var(--font-mono)",
-                            cursor: "pointer",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            marginBottom: "32px",
+                            paddingBottom: "16px",
+                            borderBottom: "1px solid var(--border-subtle)",
+                            gap: "16px",
+                            flexWrap: "wrap",
                           }}
                         >
-                          Copy Markdown
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const blob = new Blob([wikiContent], { type: "text/markdown" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `${repoDisplayName.replace("/", "-")}-wiki.md`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          }}
-                          style={{
-                            height: "30px",
-                            padding: "0 12px",
-                            background: "var(--text-primary)",
-                            color: "var(--bg-app)",
-                            border: "none",
-                            borderRadius: "var(--radius-sm)",
-                            fontSize: "11px",
-                            fontWeight: 500,
-                            fontFamily: "var(--font-mono)",
-                            cursor: "pointer",
-                          }}
-                        >
-                          ↓ Download .md
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setWikiContent("");
-                            setWikiMeta(null);
-                          }}
-                          style={{
-                            height: "30px",
-                            padding: "0 12px",
-                            background: "transparent",
-                            border: "1px solid var(--border-subtle)",
-                            borderRadius: "var(--radius-sm)",
-                            fontSize: "11px",
-                            color: "var(--text-tertiary)",
-                            fontFamily: "var(--font-mono)",
-                            cursor: "pointer",
-                          }}
-                        >
-                          Regenerate
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                          <div style={{ display: "flex", gap: "20px" }}>
+                            {[
+                              { label: "words", value: wikiMeta?.wordCount?.toLocaleString() ?? "0" },
+                              { label: "sections", value: String(wikiMeta?.sectionCount ?? 0) },
+                              { label: "files documented", value: String(files.length) },
+                            ].map((stat) => (
+                              <div key={stat.label}>
+                                <p
+                                  style={{
+                                    fontSize: "18px",
+                                    fontWeight: 600,
+                                    color: "var(--text-primary)",
+                                    fontFamily: "var(--font-mono)",
+                                    lineHeight: 1,
+                                  }}
+                                >
+                                  {stat.value}
+                                </p>
+                                <p
+                                  style={{
+                                    fontSize: "10px",
+                                    color: "var(--text-tertiary)",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.06em",
+                                    marginTop: "4px",
+                                  }}
+                                >
+                                  {stat.label}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
 
-                  {wikiContent && (
-                    <div style={{ fontSize: "14px", lineHeight: 1.8 }}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{wikiContent}</ReactMarkdown>
+                          <div style={{ display: "flex", gap: "8px" }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard.writeText(wikiContent);
+                              }}
+                              style={{
+                                height: "32px",
+                                padding: "0 14px",
+                                background: "transparent",
+                                border: "1px solid var(--border-subtle)",
+                                borderRadius: "var(--radius-sm)",
+                                fontSize: "11px",
+                                color: "var(--text-tertiary)",
+                                fontFamily: "var(--font-mono)",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Copy Markdown
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const blob = new Blob([wikiContent], { type: "text/markdown" });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = `${repoDisplayName?.replace("/", "-") || "wiki"}.md`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              }}
+                              style={{
+                                height: "32px",
+                                padding: "0 14px",
+                                background: "var(--text-primary)",
+                                color: "var(--bg-app)",
+                                border: "none",
+                                borderRadius: "var(--radius-sm)",
+                                fontSize: "11px",
+                                fontWeight: 500,
+                                fontFamily: "var(--font-mono)",
+                                cursor: "pointer",
+                              }}
+                            >
+                              ↓ Download .md
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setWikiContent("");
+                                setWikiMeta(null);
+                              }}
+                              style={{
+                                height: "32px",
+                                padding: "0 14px",
+                                background: "transparent",
+                                border: "1px solid var(--border-subtle)",
+                                borderRadius: "var(--radius-sm)",
+                                fontSize: "11px",
+                                color: "var(--text-tertiary)",
+                                fontFamily: "var(--font-mono)",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Regenerate
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ fontSize: "14px", lineHeight: 1.8 }}>
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              h1: ({ children }) => {
+                                const id = createHeadingId(nodeToPlainText(children));
+
+                                return (
+                                  <h1
+                                    id={id}
+                                    style={{
+                                      fontSize: "22px",
+                                      fontWeight: "600",
+                                      color: "var(--text-primary)",
+                                      marginTop: "40px",
+                                      marginBottom: "16px",
+                                      paddingBottom: "12px",
+                                      borderBottom: "1px solid var(--border-subtle)",
+                                      fontFamily: "var(--font-sans)",
+                                      scrollMarginTop: "80px",
+                                    }}
+                                  >
+                                    {children}
+                                  </h1>
+                                );
+                              },
+                              h2: ({ children }) => {
+                                const id = createHeadingId(nodeToPlainText(children));
+
+                                return (
+                                  <h2
+                                    id={id}
+                                    style={{
+                                      fontSize: "16px",
+                                      fontWeight: "600",
+                                      color: "var(--text-primary)",
+                                      marginTop: "32px",
+                                      marginBottom: "12px",
+                                      fontFamily: "var(--font-sans)",
+                                      scrollMarginTop: "80px",
+                                    }}
+                                  >
+                                    {children}
+                                  </h2>
+                                );
+                              },
+                              h3: ({ children }) => {
+                                const id = createHeadingId(nodeToPlainText(children));
+
+                                return (
+                                  <h3
+                                    id={id}
+                                    style={{
+                                      fontSize: "13px",
+                                      fontWeight: "600",
+                                      color: "var(--text-secondary)",
+                                      marginTop: "24px",
+                                      marginBottom: "8px",
+                                      fontFamily: "var(--font-mono)",
+                                      scrollMarginTop: "80px",
+                                    }}
+                                  >
+                                    {children}
+                                  </h3>
+                                );
+                              },
+                              p: ({ children }) => (
+                                <p
+                                  style={{
+                                    fontSize: "13px",
+                                    lineHeight: "1.8",
+                                    color: "var(--text-secondary)",
+                                    marginBottom: "16px",
+                                    fontFamily: "var(--font-sans)",
+                                  }}
+                                >
+                                  {children}
+                                </p>
+                              ),
+                              code: ({ inline, className, children }: MarkdownCodeProps) => {
+                                const rawCode = Array.isArray(children)
+                                  ? children.map((part) => String(part)).join("")
+                                  : String(children ?? "");
+                                const language = className?.replace("language-", "") || "";
+                                const codeString = rawCode.trim();
+
+                                if (!inline && language === "mermaid") {
+                                  return <MermaidDiagram code={codeString} />;
+                                }
+
+                                const isAsciiDiagram =
+                                  codeString.includes("+--") || codeString.includes("|  ") || codeString.includes("+-");
+
+                                if (inline) {
+                                  return (
+                                    <code
+                                      style={{
+                                        fontFamily: "var(--font-mono)",
+                                        fontSize: "12px",
+                                        background: "var(--bg-elevated)",
+                                        border: "1px solid var(--border-subtle)",
+                                        borderRadius: "4px",
+                                        padding: "1px 6px",
+                                        color: "#a78bfa",
+                                      }}
+                                    >
+                                      {children}
+                                    </code>
+                                  );
+                                }
+
+                                return (
+                                  <div style={{ position: "relative", marginBottom: "20px" }}>
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        padding: "6px 12px",
+                                        background: "var(--bg-overlay)",
+                                        borderRadius: "6px 6px 0 0",
+                                        border: "1px solid var(--border-subtle)",
+                                        borderBottom: "none",
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          fontSize: "10px",
+                                          fontFamily: "var(--font-mono)",
+                                          color: "var(--text-tertiary)",
+                                          textTransform: "uppercase",
+                                          letterSpacing: "0.06em",
+                                        }}
+                                      >
+                                        {language || "code"}
+                                      </span>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          void navigator.clipboard.writeText(codeString);
+                                        }}
+                                        style={{
+                                          background: "transparent",
+                                          border: "none",
+                                          fontSize: "10px",
+                                          color: "var(--text-tertiary)",
+                                          cursor: "pointer",
+                                          fontFamily: "var(--font-mono)",
+                                          padding: "2px 6px",
+                                          borderRadius: "4px",
+                                        }}
+                                        onMouseEnter={(event) => {
+                                          event.currentTarget.style.color = "var(--text-primary)";
+                                        }}
+                                        onMouseLeave={(event) => {
+                                          event.currentTarget.style.color = "var(--text-tertiary)";
+                                        }}
+                                      >
+                                        copy
+                                      </button>
+                                    </div>
+
+                                    <pre
+                                      style={{
+                                        background: "var(--bg-surface)",
+                                        border: "1px solid var(--border-subtle)",
+                                        borderRadius: "0 0 6px 6px",
+                                        padding: "16px",
+                                        overflowX: "auto",
+                                        margin: 0,
+                                      }}
+                                    >
+                                      <code
+                                        style={{
+                                          fontFamily: "var(--font-mono)",
+                                          fontSize: isAsciiDiagram ? "11px" : "12px",
+                                          color: isAsciiDiagram ? "var(--text-secondary)" : "#a78bfa",
+                                          lineHeight: isAsciiDiagram ? "1.4" : "1.7",
+                                          whiteSpace: "pre",
+                                        }}
+                                      >
+                                        {children}
+                                      </code>
+                                    </pre>
+                                  </div>
+                                );
+                              },
+                              table: ({ children }) => (
+                                <div style={{ overflowX: "auto", marginBottom: "20px" }}>
+                                  <table
+                                    style={{
+                                      width: "100%",
+                                      borderCollapse: "collapse",
+                                      fontSize: "12px",
+                                      fontFamily: "var(--font-sans)",
+                                    }}
+                                  >
+                                    {children}
+                                  </table>
+                                </div>
+                              ),
+                              th: ({ children }) => (
+                                <th
+                                  style={{
+                                    padding: "8px 12px",
+                                    textAlign: "left",
+                                    fontSize: "10px",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.06em",
+                                    color: "var(--text-tertiary)",
+                                    borderBottom: "1px solid var(--border-subtle)",
+                                    background: "var(--bg-surface)",
+                                    fontFamily: "var(--font-sans)",
+                                    fontWeight: "500",
+                                  }}
+                                >
+                                  {children}
+                                </th>
+                              ),
+                              td: ({ children }) => (
+                                <td
+                                  style={{
+                                    padding: "8px 12px",
+                                    fontSize: "12px",
+                                    color: "var(--text-secondary)",
+                                    borderBottom: "1px solid var(--border-subtle)",
+                                    verticalAlign: "top",
+                                    lineHeight: "1.6",
+                                  }}
+                                >
+                                  {children}
+                                </td>
+                              ),
+                              ul: ({ children }) => (
+                                <ul
+                                  style={{
+                                    marginBottom: "16px",
+                                    paddingLeft: 0,
+                                    listStyle: "none",
+                                  }}
+                                >
+                                  {children}
+                                </ul>
+                              ),
+                              ol: ({ children }) => (
+                                <ol
+                                  style={{
+                                    marginBottom: "16px",
+                                    paddingLeft: "20px",
+                                  }}
+                                >
+                                  {children}
+                                </ol>
+                              ),
+                              li: ({ children }) => (
+                                <li
+                                  style={{
+                                    fontSize: "13px",
+                                    color: "var(--text-secondary)",
+                                    lineHeight: "1.7",
+                                    marginBottom: "6px",
+                                    paddingLeft: "16px",
+                                    position: "relative",
+                                    fontFamily: "var(--font-sans)",
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      position: "absolute",
+                                      left: 0,
+                                      color: "var(--text-tertiary)",
+                                      fontFamily: "var(--font-mono)",
+                                    }}
+                                  >
+                                    →
+                                  </span>
+                                  {children}
+                                </li>
+                              ),
+                              strong: ({ children }) => (
+                                <strong
+                                  style={{
+                                    fontWeight: "600",
+                                    color: "var(--text-primary)",
+                                  }}
+                                >
+                                  {children}
+                                </strong>
+                              ),
+                              blockquote: ({ children }) => (
+                                <blockquote
+                                  style={{
+                                    borderLeft: "2px solid var(--border-strong)",
+                                    paddingLeft: "16px",
+                                    margin: "16px 0",
+                                    color: "var(--text-tertiary)",
+                                    fontStyle: "italic",
+                                    fontSize: "13px",
+                                  }}
+                                >
+                                  {children}
+                                </blockquote>
+                              ),
+                              hr: () => (
+                                <hr
+                                  style={{
+                                    border: "none",
+                                    borderTop: "1px solid var(--border-subtle)",
+                                    margin: "32px 0",
+                                  }}
+                                />
+                              ),
+                              a: ({ href, children }) => {
+                                const internal = href?.startsWith("#");
+
+                                return (
+                                  <a
+                                    href={href}
+                                    target={internal ? undefined : "_blank"}
+                                    rel={internal ? undefined : "noopener noreferrer"}
+                                    style={{
+                                      color: "#a78bfa",
+                                      textDecoration: "none",
+                                      borderBottom: "1px solid #a78bfa40",
+                                    }}
+                                  >
+                                    {children}
+                                  </a>
+                                );
+                              },
+                            }}
+                          >
+                            {wikiContent}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+
+                      <div className="hidden xl:block" style={{ width: "220px", flexShrink: 0 }}>
+                        <div
+                          style={{
+                            width: "200px",
+                            flexShrink: 0,
+                            position: "sticky",
+                            top: "16px",
+                            alignSelf: "flex-start",
+                            padding: "16px",
+                            border: "1px solid var(--border-subtle)",
+                            borderRadius: "var(--radius-md)",
+                            background: "var(--bg-surface)",
+                          }}
+                        >
+                          <p
+                            style={{
+                              fontSize: "10px",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                              color: "var(--text-tertiary)",
+                              marginBottom: "12px",
+                              fontFamily: "var(--font-mono)",
+                            }}
+                          >
+                            On this page
+                          </p>
+
+                          {wikiTocItems.map((item) => (
+                            <a
+                              key={`${item.id}-${item.level}-${item.text}`}
+                              href={`#${item.id}`}
+                              style={{
+                                display: "block",
+                                padding: "4px 0",
+                                paddingLeft: item.level === 2 ? "12px" : "0",
+                                fontSize: "11px",
+                                color: "var(--text-tertiary)",
+                                textDecoration: "none",
+                                fontFamily: "var(--font-sans)",
+                                borderLeft: item.level === 2 ? "1px solid var(--border-subtle)" : "none",
+                                transition: "color 150ms",
+                              }}
+                              onMouseEnter={(event) => {
+                                event.currentTarget.style.color = "var(--text-primary)";
+                              }}
+                              onMouseLeave={(event) => {
+                                event.currentTarget.style.color = "var(--text-tertiary)";
+                              }}
+                            >
+                              {item.text}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
             )
+                }
+                </motion.div>
+              </AnimatePresence>
             )}
-          </div>
+          </motion.main>
         </section>
 
         <aside
